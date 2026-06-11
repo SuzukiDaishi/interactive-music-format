@@ -439,8 +439,12 @@ export function CuePanel() {
   return (
     <div className="panel cues">
       <div className="panel-head">
-        <span>Cues & Triggers</span>
-        <button onClick={addCue}>＋</button>
+        <span title="Cues are named commands (e.g. 'to_battle') the game fires — each cue runs its rules and actions">
+          Cues & Triggers
+        </span>
+        <button title="Add a new cue" onClick={addCue}>
+          ＋ Cue
+        </button>
       </div>
       <div className="panel-body">
         <div className="cue-tabs">
@@ -448,12 +452,19 @@ export function CuePanel() {
             <button
               key={c.id}
               className={`cue-tab ${s.selectedCueId === c.id ? 'selected' : ''}`}
+              title="Select this cue to edit it"
               onClick={() => store.touch((st) => (st.selectedCueId = c.id))}
             >
               {c.name}
             </button>
           ))}
         </div>
+        {s.project.cues.length === 0 && (
+          <div className="hint">
+            Cues are named commands the game fires (e.g. <i>to_battle</i>). Each cue holds rules
+            (“if condition → do actions”). Click <b>＋ Cue</b> to create one.
+          </div>
+        )}
         {cue && (
           <div className="cue-editor">
             <div className="cue-row">
@@ -531,18 +542,26 @@ export function CuePanel() {
               );
             })}
             <button
+              title="Add another condition → actions rule to this cue"
               onClick={() =>
                 store.update(() => cue.rules.push({ condition: '', stopIfMatched: true, actions: [] }))
               }
             >
-              ＋ rule
+              ＋ Add rule
             </button>
           </div>
         )}
         <div className="bindings">
           <div className="panel-subhead">
-            <span>Trigger bindings</span>
+            <span title="Bindings fire a cue automatically when an engine event happens (trigger → cue)">
+              Trigger bindings
+            </span>
             <button
+              title={
+                s.project.cues.length === 0
+                  ? 'Create a cue first'
+                  : 'Add a binding (fire a cue automatically on an engine event)'
+              }
               disabled={s.project.cues.length === 0}
               onClick={() =>
                 store.update((st) =>
@@ -553,7 +572,7 @@ export function CuePanel() {
                 )
               }
             >
-              ＋
+              ＋ Add
             </button>
           </div>
           {s.project.bindings.map((b, i) => (
@@ -565,8 +584,8 @@ export function CuePanel() {
           ))}
           {s.project.bindings.length === 0 && (
             <div className="hint">
-              Bindings connect triggers (RTPC change, section end, anchors…) to cues. Cues can also
-              be fired manually by the host.
+              Bindings fire cues automatically on engine events (parameter change, section end,
+              anchor reached…). Without a binding, cues only run when fired by name.
             </div>
           )}
         </div>

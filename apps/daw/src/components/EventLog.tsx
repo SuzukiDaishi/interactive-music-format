@@ -13,8 +13,10 @@ export function EventLog() {
   return (
     <div className="panel log">
       <div className="panel-head">
-        <span>Events</span>
-        <button onClick={() => preview.clearLog()}>clear</button>
+        <span title="Live engine events (transitions, cues, loops…) while previewing">Event Log</span>
+        <button title="Clear the log" onClick={() => preview.clearLog()}>
+          Clear
+        </button>
       </div>
       <div className="panel-body log-body" ref={bodyRef}>
         {pv.error && <div className="expr-error">{pv.error}</div>}

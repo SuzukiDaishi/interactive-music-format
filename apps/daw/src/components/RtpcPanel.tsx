@@ -34,19 +34,27 @@ export function RtpcPanel() {
   };
 
   return (
-    <div className="panel">
+    <div className="panel rtpc">
       <div className="panel-head">
-        <span>RTPC</span>
-        <button onClick={add}>＋</button>
+        <span title="Realtime parameters the host game/app drives (e.g. intensity, weather). Move a slider while previewing to hear the music react.">
+          Parameters (RTPC)
+        </span>
+        <button title="Add a new parameter" onClick={add}>
+          ＋ Add
+        </button>
       </div>
       <div className="panel-body">
         {s.project.rtpcs.map((r) => (
           <div key={r.id} className="rtpc-row">
             <div className="rtpc-main">
-              <button className="chev" onClick={() => setExpanded(expanded === r.id ? null : r.id)}>
-                {expanded === r.id ? '▾' : '▸'}
+              <button
+                className="rtpc-toggle"
+                title={expanded === r.id ? 'Hide settings' : 'Edit name, type, range…'}
+                onClick={() => setExpanded(expanded === r.id ? null : r.id)}
+              >
+                <span className="chev">{expanded === r.id ? '▾' : '▸'}</span>
+                <span className="rtpc-name">{r.name}</span>
               </button>
-              <span className="rtpc-name">{r.name}</span>
               {r.type === 'f32' && (
                 <>
                   <input
@@ -178,7 +186,10 @@ export function RtpcPanel() {
           </div>
         ))}
         {s.project.rtpcs.length === 0 && (
-          <div className="hint">RTPCs are realtime parameters the host app drives (e.g. intensity, weather).</div>
+          <div className="hint">
+            Parameters (RTPCs) are realtime values the host game/app drives — e.g. <i>intensity</i>,
+            <i> weather</i>. Cues can react to them. Click <b>＋ Add</b> to create one.
+          </div>
         )}
       </div>
     </div>

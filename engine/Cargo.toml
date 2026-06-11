@@ -1,0 +1,18 @@
+[package]
+name = "iam-engine"
+version = "1.0.0"
+edition = "2021"
+description = "Interactive Audio Module (IAM) runtime engine"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[dependencies]

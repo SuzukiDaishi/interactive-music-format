@@ -1,0 +1,20 @@
+{
+  "name": "@iam/pack",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "IAMP pack encoder/decoder, .iam.wasm container tools and cue expression compiler",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

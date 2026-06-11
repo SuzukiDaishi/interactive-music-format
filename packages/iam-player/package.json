@@ -1,0 +1,23 @@
+{
+  "name": "@iam/player",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Host player library for .iam.wasm Interactive Audio Modules",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@iam/pack": "1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

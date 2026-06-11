@@ -1,0 +1,6 @@
+node_modules/
+dist/
+engine/target/
+examples/out/
+*.log
+.DS_Store

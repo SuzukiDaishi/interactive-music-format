@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>IAM demo host — playing a .iam.wasm like a game would</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "@iam/pack": "../../packages/iam-pack/dist/index.js",
+        "@iam/player": "../../packages/iam-player/dist/index.js"
+      }
+    }
+  </script>
+  <style>
+    body { font: 14px system-ui; background: #11131a; color: #dde3ee; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 18px; } h1 small { color:#8a93a6; font-weight: 400; }
+    fieldset { border: 1px solid #2c3140; border-radius: 8px; margin: 12px 0; }
+    button { background:#3d6fd9; color:#fff; border:0; border-radius:6px; padding:8px 14px; margin:4px; cursor:pointer; font-size:14px; }
+    button.alt { background:#2c3140; }
+    label { display:flex; gap:10px; align-items:center; margin:8px 4px; }
+    label span.name { width: 110px; font-family: ui-monospace,monospace; }
+    input[type=range] { flex:1; }
+    #log { font: 12px ui-monospace,monospace; background:#0b0d12; border-radius:8px; padding:10px; height:200px; overflow-y:auto; white-space:pre-wrap; }
+    #status { font-family: ui-monospace,monospace; color:#e8b341; }
+    #drop { border:2px dashed #2c3140; border-radius:8px; padding:18px; text-align:center; color:#8a93a6; }
+  </style>
+</head>
+<body>
+  <h1>IAM demo host <small>— a stand-in for your game / app</small></h1>
+  <div id="drop">
+    Drop a <b>.iam.wasm</b> here, or
+    <button class="alt" id="load-demo">load examples/out/adventure_demo.iam.wasm</button>
+  </div>
+  <fieldset id="ui" style="display:none">
+    <legend id="title"></legend>
+    <div>
+      <button id="play">▶ Play</button>
+      <button id="end" class="alt">⏭ to_ending cue</button>
+      <button id="stop" class="alt">⏹ Stop (fade)</button>
+      <span id="status"></span>
+    </div>
+    <label><span class="name">rate</span>
+      <input id="rate" type="range" min="-2" max="2" step="0.05" value="1" />
+      <span id="rateval">1.00×</span>
+    </label>
+    <div id="rtpcs"></div>
+  </fieldset>
+  <div id="log"></div>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

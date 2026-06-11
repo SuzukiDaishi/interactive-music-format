@@ -1,0 +1,63 @@
+import { useEffect } from 'react';
+import { TopBar } from './components/TopBar';
+import { SectionList } from './components/SectionList';
+import { AssetPanel } from './components/AssetPanel';
+import { Timeline } from './components/Timeline';
+import { RtpcPanel } from './components/RtpcPanel';
+import { CuePanel } from './components/CuePanel';
+import { EventLog } from './components/EventLog';
+import { store, useStore } from './store';
+import { loadDemoProject } from './demo';
+
+export function App() {
+  const s = useStore();
+
+  useEffect(() => {
+    // Start with something audible on first launch.
+    if (store.project.sections.length === 0) loadDemoProject();
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+      const sel = store.selection;
+      if (sel.kind === 'item') {
+        store.update((st) => {
+          const section = st.project.sections.find((x) => x.id === sel.sectionId);
+          const track = section?.tracks.find((t) => t.id === sel.trackId);
+          if (track) track.items = track.items.filter((i) => i.id !== sel.itemId);
+          st.selection = { kind: 'none' };
+        });
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  return (
+    <div className="app">
+      <TopBar />
+      <div className="main">
+        <div className="col left">
+          <SectionList />
+          <AssetPanel />
+        </div>
+        <div className="col center">
+          {s.selectedSection ? (
+            <Timeline key={s.selectedSection.id} />
+          ) : (
+            <div className="placeholder">Add or select a section to edit its timeline</div>
+          )}
+        </div>
+        <div className="col right">
+          <RtpcPanel />
+          <CuePanel />
+          <EventLog />
+        </div>
+      </div>
+    </div>
+  );
+}

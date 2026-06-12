@@ -28,9 +28,13 @@ export function AssetPanel() {
   return (
     <div className="panel">
       <div className="panel-head">
-        <span>Assets</span>
-        <button onClick={() => fileRef.current?.click()} disabled={busy}>
-          {busy ? '…' : '＋ Import'}
+        <span title="Audio files used by the timeline tracks">Audio Assets</span>
+        <button
+          title="Import audio files (wav / mp3 / m4a / ogg…)"
+          onClick={() => fileRef.current?.click()}
+          disabled={busy}
+        >
+          {busy ? 'Importing…' : '＋ Import'}
         </button>
       </div>
       <div className="panel-body">
@@ -44,13 +48,18 @@ export function AssetPanel() {
               store.touch((st) => (st.selectedAssetId = a.id));
             }}
             onClick={() => store.touch((st) => (st.selectedAssetId = a.id))}
-            title="Drag onto a timeline lane to place"
+            title="Drag onto a timeline lane to place it"
           >
-            <span className="grow">{a.name}</span>
+            <span className="drag-grip" aria-hidden>
+              ⠿
+            </span>
+            <span className="grow asset-name">{a.name}</span>
             <span className="dim">
-              {(a.frames / a.sampleRate).toFixed(1)}s {a.channels === 2 ? 'st' : 'mo'}
+              {(a.frames / a.sampleRate).toFixed(1)}s · {a.channels === 2 ? 'stereo' : 'mono'}
             </span>
             <button
+              className="icon-btn"
+              title="Delete asset"
               onClick={(e) => {
                 e.stopPropagation();
                 const used = store.project.sections.some((sec) =>
@@ -71,8 +80,13 @@ export function AssetPanel() {
             </button>
           </div>
         ))}
-        {s.assets.size === 0 && (
-          <div className="hint">Import audio files (wav/mp3/m4a/ogg…) to place them on tracks.</div>
+        {s.assets.size === 0 ? (
+          <div className="hint">
+            Click <b>＋ Import</b> to add audio files (wav / mp3 / m4a / ogg…), then drag them onto
+            timeline tracks.
+          </div>
+        ) : (
+          <div className="hint">⠿ Drag an asset onto a timeline lane to place it.</div>
         )}
       </div>
       <input

@@ -10,6 +10,16 @@
 
 import { DecodedPack, decodePack, extractPack, IamEvent, NONE_ID, EventType } from '@iam/pack';
 import { IAM_PROCESSOR_NAME, IAM_WORKLET_SOURCE } from './worklet.js';
+import { loadWclapBundle } from './wclap/bundle.js';
+import { planRack } from './wclap/resolve.js';
+
+interface WorkletPluginSpec {
+  instanceId: number;
+  module: WebAssembly.Module;
+  clapPluginId?: string;
+  params: { id: number; value: number }[];
+  audioInputs: 0 | 1;
+}
 
 export interface NamedEvent extends IamEvent {
   /** Human-readable event name. */
@@ -99,16 +109,79 @@ export class IamPlayer {
       registeredContexts.add(ctx);
     }
 
+    // Resolve any WCLAP plugins (instrument synths + effects) so the worklet can
+    // host them. Failure degrades gracefully to engine PCM only.
+    let plugins: WorkletPluginSpec[] | undefined;
+    let routing: unknown;
+    try {
+      const resolved = await IamPlayer.resolvePlugins(meta);
+      if (resolved) {
+        plugins = resolved.plugins;
+        routing = resolved.routing;
+      }
+    } catch {
+      plugins = undefined;
+    }
+
     const node = new AudioWorkletNode(ctx, IAM_PROCESSOR_NAME, {
       numberOfInputs: 0,
       numberOfOutputs: 1,
       outputChannelCount: [2],
-      processorOptions: { module, pack },
+      processorOptions: { module, pack, plugins, routing },
     });
 
     const player = new IamPlayer(node, meta);
     await player.waitReady();
     return player;
+  }
+
+  /**
+   * Resolves the WCLAP plugin bank for the worklet: compiles each used bundle
+   * (embedded bytes, else fetched URL) and computes instrument/effect routing.
+   */
+  private static async resolvePlugins(
+    meta: DecodedPack,
+  ): Promise<{ plugins: WorkletPluginSpec[]; routing: unknown } | null> {
+    const project = meta.project;
+    if (!project) return null;
+    const plan = planRack(project);
+    if (!plan) return null;
+
+    const moduleCache = new Map<number, WebAssembly.Module>();
+    const plugins: WorkletPluginSpec[] = [];
+    for (const inst of plan.instances) {
+      let module = moduleCache.get(inst.pluginBankId);
+      if (!module) {
+        const decoded = meta.plugins.find((p) => p.id === inst.pluginBankId);
+        const banked = project.plugins.find((p) => p.id === inst.pluginBankId);
+        let bytes: Uint8Array | undefined;
+        if (decoded?.embedded && decoded.data) {
+          bytes = decoded.data;
+        } else {
+          const url = decoded?.url || banked?.url;
+          if (!url) continue;
+          const res = await fetch(url);
+          if (!res.ok) continue;
+          bytes = new Uint8Array(await res.arrayBuffer());
+        }
+        const { moduleBytes } = await loadWclapBundle(bytes);
+        module = await WebAssembly.compile(
+          moduleBytes.buffer.slice(
+            moduleBytes.byteOffset,
+            moduleBytes.byteOffset + moduleBytes.byteLength,
+          ) as ArrayBuffer,
+        );
+        moduleCache.set(inst.pluginBankId, module);
+      }
+      plugins.push({
+        instanceId: inst.instanceId,
+        module,
+        clapPluginId: inst.clapPluginId,
+        params: inst.params,
+        audioInputs: inst.audioInputs,
+      });
+    }
+    return { plugins, routing: plan.routing };
   }
 
   private readyResolve?: () => void;

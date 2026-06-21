@@ -6,6 +6,7 @@ import { useSyncExternalStore } from 'react';
 import {
   AssetMeta,
   EncodeAsset,
+  EncodePlugin,
   IamProject,
   Section,
   Track,
@@ -25,11 +26,14 @@ export interface AssetAudio {
 export type Selection =
   | { kind: 'none' }
   | { kind: 'item'; sectionId: number; trackId: number; itemId: number }
+  | { kind: 'note'; sectionId: number; trackId: number; noteIndex: number }
   | { kind: 'track'; sectionId: number; trackId: number };
 
 class DawStore {
   project: IamProject = emptyProject('New Project');
   assets = new Map<number, AssetAudio>();
+  /** Raw `.wclap` bundle bytes keyed by WclapPlugin.id (embedded plugins). */
+  pluginBundles = new Map<number, Uint8Array>();
   selectedSectionId: number | null = null;
   selectedCueId: number | null = null;
   selectedAssetId: number | null = null;
@@ -89,6 +93,14 @@ class DawStore {
     return this.nextId(this.project.rtpcs.map((r) => r.id));
   }
 
+  nextPluginId(): number {
+    return this.nextId(this.project.plugins.map((p) => p.id));
+  }
+
+  nextInstanceId(): number {
+    return this.nextId(this.project.pluginInstances.map((i) => i.id));
+  }
+
   trackOf(section: Section, trackId: number): Track | null {
     return section.tracks.find((t) => t.id === trackId) ?? null;
   }
@@ -125,10 +137,29 @@ class DawStore {
     return this.project;
   }
 
-  loadProject(project: IamProject, assets: AssetAudio[]): void {
+  /**
+   * WCLAP plugins as the pack encoder wants them: each bank plugin plus its
+   * embedded `.wclap` bundle bytes (when available in {@link pluginBundles}).
+   */
+  encodePlugins(): EncodePlugin[] {
+    return this.project.plugins.map((p) => ({
+      id: p.id,
+      name: p.name,
+      clapPluginId: p.clapPluginId,
+      url: p.url,
+      data: p.embedded ? this.pluginBundles.get(p.id) : undefined,
+    }));
+  }
+
+  loadProject(
+    project: IamProject,
+    assets: AssetAudio[],
+    bundles?: Map<number, Uint8Array>,
+  ): void {
     this.update((s) => {
       s.project = project;
       s.assets = new Map(assets.map((a) => [a.id, a]));
+      s.pluginBundles = bundles ?? new Map();
       s.selectedSectionId = project.sections[0]?.id ?? null;
       s.selectedCueId = project.cues[0]?.id ?? null;
       s.selectedAssetId = assets[0]?.id ?? null;

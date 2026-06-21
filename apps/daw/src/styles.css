@@ -638,3 +638,122 @@ input[type='number'] {
   padding: 1px 4px;
   white-space: nowrap;
 }
+
+/* ---- Instrument tracks & piano-roll ---- */
+.track-header.instrument {
+  justify-content: flex-start;
+  gap: 3px;
+  overflow: hidden;
+}
+.track-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.track-title input:not([type]) {
+  flex: 1;
+  min-width: 0;
+}
+.track-title .kind {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 2px;
+}
+.track-inst {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.track-inst select {
+  font-size: 10px;
+  padding: 1px 2px;
+  max-width: 96px;
+}
+.fx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  padding: 0 2px 0 4px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--dim);
+}
+.fx-chip button {
+  padding: 0 2px;
+  background: transparent;
+  border: none;
+  color: var(--dim);
+  font-size: 10px;
+}
+.add-track-row {
+  display: flex;
+  gap: 6px;
+  margin: 6px;
+}
+
+/* ---- Plugins panel ---- */
+.panel.plugins {
+  flex-shrink: 0;
+  max-height: 38%;
+}
+.plugin-group {
+  padding: 4px 8px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.plugin-add {
+  display: inline-flex;
+  gap: 4px;
+}
+.plugin-add select {
+  max-width: 150px;
+}
+.plugin-row,
+.master-row,
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+.plugin-id {
+  color: var(--dim);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.plugin-name {
+  width: 90px;
+}
+.plugin-clap {
+  flex: 1;
+  min-width: 60px;
+  font-size: 11px;
+}
+.plugin-embed {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--panel2);
+  color: var(--dim);
+}
+.plugin-embed.on {
+  color: #41e8a5;
+}
+.instance-row {
+  margin-top: 5px;
+}
+.instance-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.master-name {
+  flex: 1;
+}
+.mini-btn {
+  font-size: 10px;
+  padding: 1px 5px;
+}

@@ -64,9 +64,12 @@ class PreviewEngine {
   /** Builds the current project into a .iam.wasm byte array. */
   async buildModule(format: 'pcm16' | 'f32' = 'pcm16'): Promise<Uint8Array> {
     const engine = await this.ensureEngine();
-    const pack = encodePack(store.syncedProject(), store.encodeAssets(format), {
-      includeMeta: true,
-    });
+    const pack = encodePack(
+      store.syncedProject(),
+      store.encodeAssets(format),
+      { includeMeta: true },
+      store.encodePlugins(),
+    );
     return buildIamWasm(engine, pack);
   }
 

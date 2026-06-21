@@ -61,6 +61,7 @@ export function packAssetsToAudio(
 export function importIamWasm(bytes: Uint8Array): {
   project: IamProject;
   assets: AssetAudio[];
+  bundles: Map<number, Uint8Array>;
 } {
   const pack = extractPack(bytes);
   if (!pack) throw new Error('Not a .iam.wasm file (no iam.pack section)');
@@ -70,9 +71,15 @@ export function importIamWasm(bytes: Uint8Array): {
       'This module has no embedded project metadata (META chunk stripped); it cannot be re-imported.',
     );
   }
+  // Recover embedded WCLAP bundle bytes so plugins survive an import round-trip.
+  const bundles = new Map<number, Uint8Array>();
+  for (const p of decoded.plugins) {
+    if (p.embedded && p.data) bundles.set(p.id, p.data);
+  }
   return {
     project: normalizeProject(decoded.project),
     assets: packAssetsToAudio(decoded.assets),
+    bundles,
   };
 }
 

@@ -232,6 +232,9 @@ const A = {
 
 const S = { EXPLORE: 0, BATTLE_LOW: 1, BATTLE_HIGH: 2, OUTRO: 3 };
 const R = { INTENSITY: 0, IS_BATTLE: 1, WEATHER: 2 };
+// WCLAP plugin bank ids and instance ids (synth = instrument, limiter = master fx).
+const P = { SYNTH: 0, LIMITER: 1 };
+const I = { SYNTH: 0, LIMITER: 1 };
 const C = {
   ON_BATTLE: 0,
   ON_INTENSITY: 1,
@@ -265,6 +268,34 @@ function track(id, name, items, opts = {}) {
   };
 }
 
+/** An instrument (MIDI) track whose notes drive a WCLAP synth instance. */
+function instrTrack(id, name, instrument, notes, opts = {}) {
+  return {
+    id,
+    name,
+    volume: opts.volume ?? 1,
+    pan: opts.pan ?? 0,
+    muted: false,
+    items: [],
+    kind: 'instrument',
+    instrument,
+    notes,
+    effects: opts.effects ?? [],
+  };
+}
+
+// A short A-minor synth lead phrase (8 beats) layered onto Explore. It only
+// sounds when a WCLAP synth hosts it; pure-WASM runtimes skip instrument tracks.
+const synthLeadNotes = [
+  { startBeat: 0, lengthBeats: 1.5, key: 69, velocity: 0.85, channel: 0 },
+  { startBeat: 1.5, lengthBeats: 0.5, key: 72, velocity: 0.7, channel: 0 },
+  { startBeat: 2, lengthBeats: 1, key: 76, velocity: 0.9, channel: 0 },
+  { startBeat: 3, lengthBeats: 1, key: 74, velocity: 0.75, channel: 0 },
+  { startBeat: 4, lengthBeats: 1.5, key: 72, velocity: 0.8, channel: 0 },
+  { startBeat: 5.5, lengthBeats: 0.5, key: 69, velocity: 0.7, channel: 0 },
+  { startBeat: 6, lengthBeats: 2, key: 67, velocity: 0.8, channel: 0 },
+];
+
 export function makeDemoAssets() {
   const make = (id, name, data) => ({
     id,
@@ -295,6 +326,16 @@ export function makeDemoProject() {
     bpm: BPM,
     timeSignature: [4, 4],
     startSectionId: S.EXPLORE,
+    // WebCLAP: an embedded synth (instrument) + limiter (master bus effect).
+    plugins: [
+      { id: P.SYNTH, name: 'Z Audio Simple Synth', clapPluginId: 'dev.zaudio.simple-synth', embedded: true },
+      { id: P.LIMITER, name: 'Z Audio Limiter', clapPluginId: 'dev.zaudio.limiter', embedded: true },
+    ],
+    pluginInstances: [
+      { id: I.SYNTH, pluginBankId: P.SYNTH, params: [] },
+      { id: I.LIMITER, pluginBankId: P.LIMITER, params: [] },
+    ],
+    masterEffects: [I.LIMITER],
     rtpcs: [
       {
         id: R.INTENSITY,
@@ -329,6 +370,8 @@ export function makeDemoProject() {
         tracks: [
           track(0, 'Pad', [item(0, A.EXPLORE_PAD, 0, 8)]),
           track(1, 'Arp', [item(0, A.EXPLORE_ARP, 0, 8, { gain: 0.9 })], { pan: 0.25 }),
+          // WebCLAP instrument layer, faded in by `intensity` (縦遷移/vertical layering).
+          instrTrack(2, 'Synth Lead', I.SYNTH, synthLeadNotes, { pan: -0.2 }),
         ],
         anchors: [
           { id: 0, name: 'Entry', beat: 0 },
@@ -404,6 +447,18 @@ export function makeDemoProject() {
         id: C.ON_INTENSITY,
         name: 'on_intensity_changed',
         rules: [
+          // 縦遷移 (vertical layering): fade the WebCLAP synth lead in/out of Explore
+          // as `intensity` crosses 0.5 — a stem added on top, same section.
+          {
+            condition: "section == 'Explore' && intensity >= 0.5",
+            stopIfMatched: true,
+            actions: [{ type: 'setTrackGain', section: S.EXPLORE, track: 2, gain: 1, fadeMs: 600 }],
+          },
+          {
+            condition: "section == 'Explore'",
+            stopIfMatched: true,
+            actions: [{ type: 'setTrackGain', section: S.EXPLORE, track: 2, gain: 0, fadeMs: 800 }],
+          },
           {
             condition: "section == 'Battle_Low' && intensity >= 0.6",
             stopIfMatched: true,
@@ -465,6 +520,14 @@ export function makeDemoProject() {
         id: C.ON_START,
         name: 'on_module_start',
         rules: [
+          {
+            // Start with the synth-lead layer silent; intensity fades it in.
+            condition: '',
+            stopIfMatched: false,
+            actions: [
+              { type: 'setTrackGain', section: S.EXPLORE, track: 2, gain: 0, fadeMs: 0 },
+            ],
+          },
           {
             // Every playthrough starts a little differently.
             condition: 'rand < 0.35',

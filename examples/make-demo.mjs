@@ -19,7 +19,20 @@ const outPath =
 
 const engine = new Uint8Array(await readFile(path.join(root, 'runtime', 'engine.wasm')));
 const { project, assets } = makeDemo();
-const pack = encodePack(project, assets);
+
+// Supply the embedded WCLAP bundle bytes for each bank plugin (synth/limiter).
+const BUNDLE_FILES = {
+  'dev.zaudio.simple-synth': 'z-audio-simple-synth.wclap.tar.gz',
+  'dev.zaudio.limiter': 'z-audio-limiter.wclap.tar.gz',
+};
+const plugins = [];
+for (const p of project.plugins ?? []) {
+  const file = p.embedded ? BUNDLE_FILES[p.clapPluginId] : undefined;
+  const data = file ? new Uint8Array(await readFile(path.join(root, 'wclap', file))) : undefined;
+  plugins.push({ id: p.id, name: p.name, clapPluginId: p.clapPluginId, url: p.url, data });
+}
+
+const pack = encodePack(project, assets, {}, plugins);
 const iamWasm = buildIamWasm(engine, pack);
 
 await mkdir(path.dirname(outPath), { recursive: true });

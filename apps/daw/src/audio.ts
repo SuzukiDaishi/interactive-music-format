@@ -1,5 +1,5 @@
 /** Audio file import and asset conversion utilities. */
-import { decodePack, extractPack, IamProject } from '@iam/pack';
+import { decodePack, extractPack, IamProject, normalizeProject } from '@iam/pack';
 import { AssetAudio } from './store';
 
 /** Decodes an audio file and resamples it to the bank sample rate. */
@@ -70,7 +70,10 @@ export function importIamWasm(bytes: Uint8Array): {
       'This module has no embedded project metadata (META chunk stripped); it cannot be re-imported.',
     );
   }
-  return { project: decoded.project, assets: packAssetsToAudio(decoded.assets) };
+  return {
+    project: normalizeProject(decoded.project),
+    assets: packAssetsToAudio(decoded.assets),
+  };
 }
 
 export function downloadBytes(bytes: Uint8Array, filename: string): void {

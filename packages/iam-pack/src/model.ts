@@ -276,6 +276,25 @@ export interface EncodePlugin {
   data?: Uint8Array;
 }
 
+/**
+ * Fills in fields that may be absent when loading an older project (e.g. a v1
+ * META re-import), so consumers can rely on the v2 arrays existing. Mutates and
+ * returns the same object.
+ */
+export function normalizeProject(project: IamProject): IamProject {
+  project.plugins ??= [];
+  project.pluginInstances ??= [];
+  project.masterEffects ??= [];
+  for (const s of project.sections) {
+    for (const t of s.tracks) {
+      t.kind ??= 'audio';
+      t.items ??= [];
+      if (t.kind === 'instrument') t.notes ??= [];
+    }
+  }
+  return project;
+}
+
 export const TIMING_CODE: Record<TimingName, number> = {
   immediate: 0,
   nextBeat: 1,

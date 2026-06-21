@@ -42,6 +42,7 @@ double   iam_get_position_samples(void);           // バンクサンプル単�
 
 // イベント
 uint32_t iam_poll_event(uint8_t* out16);           // 1=イベントあり（16バイト書込）, 0=空
+uint32_t iam_poll_midi(uint8_t* out16);            // 1=MIDIあり（16バイト書込）, 0=空 (v2)
 ```
 
 ### `iam_load_pack` エラーコード
@@ -76,6 +77,24 @@ struct IamEvent { uint32_t type; uint32_t a; uint32_t b; float c; };
 
 キュー長は 256。溢れた場合は新しいイベントが破棄される。
 ホストは `iam_process` 呼び出し後に空になるまでポーリングすること。
+
+### MIDI レコード（16 バイト, v2）
+
+instrument トラックのサンプル精度ノートを `iam_poll_midi` で取得する。
+
+```c
+struct IamMidi { uint32_t instance; uint32_t frame_offset;
+                 uint8_t status; uint8_t key; uint8_t channel; uint8_t pad;
+                 float velocity; };
+```
+
+- `instance`: ルーティング先プラグインインスタンス id（`NONE_ID` = 全インストゥルメントへ
+  All-Notes-Off broadcast）。
+- `frame_offset`: 当該 `iam_process` ブロック先頭からのサンプル位置。
+- `status`: 0=NoteOff, 1=NoteOn, 2=AllNotesOff。
+
+詳細は [06_wclap_midi_bridges.md](./06_wclap_midi_bridges.md)。WCLAP プラグインの
+ホスティングは JS/AudioWorklet 層が担う（`@iam/player` の `wclap/*`）。
 
 ## 2. JavaScript / TypeScript API（`@iam/player`）
 

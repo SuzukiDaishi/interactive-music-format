@@ -78,6 +78,7 @@ tests/       Node によるエンドツーエンドテスト
 3. [03_cue_vm_spec.md](./03_cue_vm_spec.md) — Cue VM / 条件式言語
 4. [04_host_api_spec.md](./04_host_api_spec.md) — WASM ABI と JS プレイヤー API
 5. [05_runtime_behavior.md](./05_runtime_behavior.md) — 再生セマンティクス（遷移・ループ・逆再生など）
+6. [06_wclap_midi_bridges.md](./06_wclap_midi_bridges.md) — WCLAP プラグイン・MIDI トラック・横遷移（v2）
 
 ## バージョニング
 

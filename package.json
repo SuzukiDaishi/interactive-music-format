@@ -15,6 +15,7 @@
     "build": "npm run build:packages && npm run build:daw",
     "test": "npm run build:packages && node --test tests/*.test.mjs",
     "demo": "npm run build:packages && node examples/make-demo.mjs",
+    "demo:wclap": "npm run build:packages && node examples/wclap-demo.mjs",
     "dev": "npm run build:packages && npm run dev -w apps/daw"
   }
 }

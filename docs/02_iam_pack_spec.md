@@ -1,4 +1,9 @@
-# 02. IAMP データパック バイナリ仕様 v1 (normative)
+# 02. IAMP データパック バイナリ仕様 v2 (normative)
+
+> **v2 で追加**: WCLAP プラグイン (`WCLP`)、プラグインインスタンス (`PINS`)、
+> インストゥルメント (MIDI) トラックとノート、`goto`/`gotoRandom` の bridge
+> （横遷移用ブリッジセクション）。詳細は `docs/06_wclap_midi_bridges.md`。
+> v1 パックは v2 エンジンでは読み込めない（META から再エクスポートが必要）。
 
 `.iam.wasm` のカスタムセクション `iam.pack` に格納されるデータ本体のレイアウト。
 参照実装: エンコーダ `packages/iam-pack/src/encode.ts` / デコーダ `engine/src/pack.rs`。
@@ -19,7 +24,7 @@
 ```txt
 ┌──────────────────────────────┐
 │ magic   u8[4]  = "IAMP"      │
-│ version u32    = 1           │
+│ version u32    = 2           │
 │ chunk_count u32              │
 ├─ chunk × chunk_count ────────┤
 │  id      u8[4]   (ASCII)     │
@@ -38,6 +43,8 @@
 | `SECT` | Section / Track / Item / Anchor | 任意 |
 | `CUES` | Cue（ルール+アクション）と Trigger Binding | 任意 |
 | `ABNK` | オーディオバンク | 任意 |
+| `WCLP` | WCLAP プラグインバンク（埋め込みバイナリ含む） | 任意 |
+| `PINS` | プラグインインスタンス + マスターエフェクト鎖 | 任意 |
 | `META` | ツール用 JSON（DAW プロジェクト再編集用） | 任意 |
 
 同一 ID のチャンクが複数ある場合の動作は未定義（エンコーダは 1 つずつ出力すること）。
@@ -95,7 +102,11 @@ section_count × {
     f32 volume          (リニアゲイン)
     f32 pan             (-1=L .. +1=R)
     u8  muted           (0/1)
-    u8[3] pad
+    u8  kind            (0=audio, 1=instrument)   ← v2
+    u8[2] pad
+    u32 instrument      (instrument 時のプラグインインスタンス id。audio は NONE_ID)  ← v2
+    u16 effect_count    (インサートエフェクト鎖)  ← v2
+    effect_count × u32 instance_id
     u32 item_count
     item_count × {                 ← 固定 32 バイト
       u32 id
@@ -106,6 +117,15 @@ section_count × {
       f32 gain
       f32 fade_in_beats
       f32 fade_out_beats
+    }
+    u32 note_count                 ← v2 (instrument トラックの MIDI ノート)
+    note_count × {                 ← 固定 16 バイト
+      f32 start_beat
+      f32 length_beats
+      u8  key                      (0..127)
+      u8  channel                  (0..15)
+      u16 pad
+      f32 velocity                 (0..1)
     }
   }
   u32 anchor_count
@@ -142,7 +162,7 @@ binding_count × {
 
 | op | 名前 | ペイロード |
 |---|---|---|
-| 0x01 | `goto` | u32 section, u32 anchor(`NONE_ID`=先頭), u8 timing, u8 crossfade(0/1), u16 pad, f32 fade_ms |
+| 0x01 | `goto` | u32 section, u32 anchor(`NONE_ID`=先頭), u8 timing, u8 crossfade(0/1), u16 pad, f32 fade_ms, **u32 bridge**(`NONE_ID`=直接遷移)  ← v2 で 20 バイトに拡張 |
 | 0x02 | `play` | u32 section, u32 anchor — 即時ハードスイッチ |
 | 0x03 | `stop` | u8 timing, u8[3] pad, f32 fade_ms |
 | 0x04 | `setTrackGain` | u32 section, u32 track, f32 gain, f32 fade_ms |
@@ -150,7 +170,7 @@ binding_count × {
 | 0x06 | `emit` | u32 code — ホストへ任意イベント通知 |
 | 0x07 | `setRtpc` | u32 rtpc, f32 value（RTPC トリガを再帰発火。深さ上限 8） |
 | 0x08 | `oneShot` | u32 asset, f32 gain, u8 timing, u8[3] pad — スティンガー再生 |
-| 0x09 | `gotoRandom` | u8 target_count, u8 timing, u8 crossfade, u8 pad, f32 fade_ms, target_count × { u32 section, u32 anchor, f32 weight } — 重み付き抽選 goto |
+| 0x09 | `gotoRandom` | u8 target_count, u8 timing, u8 crossfade, u8 pad, f32 fade_ms, **u32 bridge**(`NONE_ID`=直接), target_count × { u32 section, u32 anchor, f32 weight } — 重み付き抽選 goto（bridge は v2） |
 
 ### timing 列挙
 
@@ -195,6 +215,43 @@ asset_count × {
 - pcm16 は `value / 32768.0` で f32 へ変換される。
 - `sample_rate` は `bank_sample_rate` と異なってもよい（再生時に線形補間でレート変換）。
   ただしオーサリングツールはバンクレートへ揃えて格納することを推奨。
+
+## 6.5. `WCLP` — WCLAP プラグインバンク（v2）
+
+```txt
+u32 plugin_count
+plugin_count × {
+  u32 id
+  str name
+  str clap_plugin_id   (.wclap バンドル内の CLAP plugin id。空 = 既定)
+  str url              (フォールバックの取得 URL。例: Plinken shelf.json)
+  u8  flags            (bit0 = embedded: バイナリを内包)
+  u8  pad
+  u16 pad
+  u32 bin_length
+  u8[bin_length] data  (.wclap (.tar.gz) バイト列。embedded=0 のとき 0)
+  u8[(4 - bin_length % 4) % 4] padding
+}
+```
+
+エンジンは `WCLP`/`PINS` を**読まない**（未知チャンクとしてスキップ）。これらは
+JS/AudioWorklet ホストがプラグインを解決・ホストするためのものである。
+
+## 6.6. `PINS` — プラグインインスタンス + マスターエフェクト（v2）
+
+```txt
+u32 instance_count
+instance_count × {
+  u32 id
+  u32 plugin_bank_id   (WCLP の id)
+  str clap_plugin_id   (空 = バンク既定)
+  u16 param_count
+  u16 pad
+  param_count × { u32 id, f32 value }   (CLAP パラメータ初期値)
+}
+u32 master_effect_count
+master_effect_count × u32 instance_id   (適用順)
+```
 
 ## 7. `META` — ツールメタデータ（任意）
 

@@ -10,6 +10,7 @@ import {
   decodePack,
   extractPack,
   IamEvent,
+  IamMidiEvent,
   NONE_ID,
 } from '@iam/pack';
 
@@ -38,6 +39,7 @@ export interface EngineExports {
   iam_get_position_beats(): number;
   iam_get_position_samples(): number;
   iam_poll_event(outPtr: number): number;
+  iam_poll_midi?(outPtr: number): number;
 }
 
 const LOAD_ERRORS: Record<number, string> = {
@@ -58,6 +60,7 @@ export class IamCore {
   private outPtr = 0;
   private outCap = 0;
   private eventPtr: number;
+  private midiPtr: number;
   private channels = 2;
 
   private constructor(
@@ -65,6 +68,7 @@ export class IamCore {
     public readonly meta: DecodedPack,
   ) {
     this.eventPtr = exports.iam_alloc(16);
+    this.midiPtr = exports.iam_alloc(16);
   }
 
   /** Instantiates the engine and loads the embedded pack. */
@@ -255,6 +259,30 @@ export class IamCore {
     const out: IamEvent[] = [];
     for (;;) {
       const e = this.pollEvent();
+      if (!e) break;
+      out.push(e);
+    }
+    return out;
+  }
+
+  /** Drains one queued MIDI event (instrument note on/off), or null. */
+  pollMidi(): IamMidiEvent | null {
+    if (!this.exports.iam_poll_midi) return null;
+    if (this.exports.iam_poll_midi(this.midiPtr) === 0) return null;
+    const v = new DataView(this.exports.memory.buffer, this.midiPtr, 16);
+    return {
+      instanceId: v.getUint32(0, true),
+      frameOffset: v.getUint32(4, true),
+      status: v.getUint8(8),
+      key: v.getUint8(9),
+      velocity: v.getFloat32(12, true),
+    };
+  }
+
+  pollMidiEvents(): IamMidiEvent[] {
+    const out: IamMidiEvent[] = [];
+    for (;;) {
+      const e = this.pollMidi();
       if (!e) break;
       out.push(e);
     }

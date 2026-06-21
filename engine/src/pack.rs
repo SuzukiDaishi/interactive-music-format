@@ -4,7 +4,7 @@
 //! All multi-byte values are little-endian.
 
 pub const MAGIC: [u8; 4] = *b"IAMP";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const NONE_ID: u32 = 0xFFFF_FFFF;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +76,24 @@ pub struct Track {
     pub volume: f32,
     pub pan: f32, // -1..1
     pub muted: bool,
+    /// 0 = audio (PCM items), 1 = instrument (MIDI notes -> plugin instance).
+    pub kind: u8,
+    /// Plugin instance id for instrument tracks (NONE_ID otherwise).
+    pub instrument: u32,
     pub items: Vec<Item>,
+    pub notes: Vec<Note>,
+}
+
+// Some fields are part of the format and kept for tooling even though the
+// engine only uses a subset.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub struct Note {
+    pub start_beat: f32,
+    pub length_beats: f32,
+    pub key: u8,
+    pub channel: u8,
+    pub velocity: f32,
 }
 
 // Some fields (names, ids) are part of the format and kept for
@@ -147,6 +164,7 @@ pub enum Action {
         timing: Timing,
         crossfade: bool,
         fade_ms: f32,
+        bridge: u32, // NONE_ID => direct transition
     },
     Play {
         section: u32,
@@ -182,6 +200,7 @@ pub enum Action {
         timing: Timing,
         crossfade: bool,
         fade_ms: f32,
+        bridge: u32, // NONE_ID => direct transition
         targets: Vec<(u32, u32, f32)>, // (section, anchor, weight)
     },
 }
@@ -400,7 +419,13 @@ fn parse_sect(r: &mut Reader, pack: &mut Pack) -> Result<()> {
             let volume = r.f32()?;
             let pan = r.f32()?;
             let muted = r.u8()? != 0;
-            r.bytes(3)?; // pad
+            let kind = r.u8()?;
+            r.u16()?; // pad
+            let instrument = r.u32()?;
+            let effect_count = r.u16()? as usize;
+            for _ in 0..effect_count {
+                r.u32()?; // effect instance ids (handled by the JS host)
+            }
             let item_count = checked_count(r.u32()?)?;
             let mut items = Vec::with_capacity(item_count);
             for _ in 0..item_count {
@@ -415,13 +440,33 @@ fn parse_sect(r: &mut Reader, pack: &mut Pack) -> Result<()> {
                     fade_out_beats: r.f32()?,
                 });
             }
+            let note_count = checked_count(r.u32()?)?;
+            let mut notes = Vec::with_capacity(note_count);
+            for _ in 0..note_count {
+                let start_beat = r.f32()?;
+                let length_beats = r.f32()?;
+                let key = r.u8()?;
+                let channel = r.u8()?;
+                r.u16()?; // pad
+                let velocity = r.f32()?;
+                notes.push(Note {
+                    start_beat,
+                    length_beats,
+                    key,
+                    channel,
+                    velocity,
+                });
+            }
             tracks.push(Track {
                 id: tid,
                 name: tname,
                 volume,
                 pan,
                 muted,
+                kind,
+                instrument,
                 items,
+                notes,
             });
         }
 
@@ -461,12 +506,14 @@ fn parse_action(r: &mut Reader) -> Result<Action> {
             let crossfade = r.u8()? != 0;
             r.u16()?; // pad
             let fade_ms = r.f32()?;
+            let bridge = r.u32()?;
             Action::Goto {
                 section,
                 anchor,
                 timing,
                 crossfade,
                 fade_ms,
+                bridge,
             }
         }
         0x02 => Action::Play {
@@ -515,6 +562,7 @@ fn parse_action(r: &mut Reader) -> Result<Action> {
             let crossfade = r.u8()? != 0;
             r.u8()?; // pad
             let fade_ms = r.f32()?;
+            let bridge = r.u32()?;
             let mut targets = Vec::with_capacity(count);
             for _ in 0..count {
                 targets.push((r.u32()?, r.u32()?, r.f32()?));
@@ -523,6 +571,7 @@ fn parse_action(r: &mut Reader) -> Result<Action> {
                 timing,
                 crossfade,
                 fade_ms,
+                bridge,
                 targets,
             }
         }

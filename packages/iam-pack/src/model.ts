@@ -7,7 +7,12 @@
  */
 
 export const PACK_MAGIC = 'IAMP';
-export const PACK_VERSION = 1;
+/**
+ * Binary pack version. Bumped 1 -> 2 to add WCLAP plugins, instrument (MIDI)
+ * tracks and bridge transitions. v1 modules must be re-exported from their META
+ * chunk to load on a v2 engine.
+ */
+export const PACK_VERSION = 2;
 export const NONE_ID = 0xffffffff;
 
 /** Name of the WASM custom section that carries the IAMP pack. */
@@ -40,6 +45,22 @@ export interface Item {
   fadeOutBeats: number;
 }
 
+/** A MIDI note placed on an instrument track's beat timeline. */
+export interface MidiNote {
+  /** Note-on position within the section, in beats. */
+  startBeat: number;
+  /** Note duration in beats (note-off fires at startBeat + lengthBeats). */
+  lengthBeats: number;
+  /** MIDI key 0..127. */
+  key: number;
+  /** Normalized velocity 0..1. */
+  velocity: number;
+  /** MIDI channel 0..15. */
+  channel: number;
+}
+
+export type TrackKind = 'audio' | 'instrument';
+
 export interface Track {
   id: number;
   name: string;
@@ -48,6 +69,52 @@ export interface Track {
   pan: number;
   muted: boolean;
   items: Item[];
+  /**
+   * 'audio' (default) mixes PCM `items`; 'instrument' sequences `notes` into the
+   * plugin instance referenced by `instrument`. Omitted = 'audio'.
+   */
+  kind?: TrackKind;
+  /** Plugin instance id driven by this track's notes (instrument tracks). */
+  instrument?: number | null;
+  /** MIDI notes for instrument tracks. */
+  notes?: MidiNote[];
+  /** Insert effect chain: ordered plugin instance ids applied to this track. */
+  effects?: number[];
+}
+
+/** A CLAP parameter value carried with a plugin instance. */
+export interface PluginParam {
+  /** CLAP parameter id. */
+  id: number;
+  value: number;
+}
+
+/**
+ * A WCLAP (WebCLAP) plugin bank entry. The binary `.wclap` artifact may be
+ * embedded in the WCLP chunk (keyed by `id`) and/or fetched from `url`.
+ */
+export interface WclapPlugin {
+  id: number;
+  name: string;
+  /**
+   * Default CLAP plugin id within the bundle (a `.wclap` may expose several).
+   * Matches an entry of the bundle manifest's `plugins[]`.
+   */
+  clapPluginId?: string;
+  /** Fallback download URL (e.g. a Plinken shelf.json artifact). */
+  url?: string;
+  /** Whether the binary artifact is embedded in the WCLP chunk. */
+  embedded: boolean;
+}
+
+/** An instantiable plugin: a bank plugin plus initial parameter values. */
+export interface PluginInstance {
+  id: number;
+  /** WclapPlugin.id this instance comes from. */
+  pluginBankId: number;
+  /** CLAP plugin id within the bundle; defaults to the bank plugin's. */
+  clapPluginId?: string;
+  params: PluginParam[];
 }
 
 export interface Anchor {
@@ -81,6 +148,12 @@ export type CueAction =
       timing: TimingName;
       transition: TransitionName;
       fadeMs: number;
+      /**
+       * Optional one-shot bridge/transition section played between source and
+       * destination. When set, the transition routes A -> bridge -> section.
+       * `null`/omitted = direct transition.
+       */
+      bridge?: number | null;
     }
   | {
       type: 'gotoRandom';
@@ -88,6 +161,8 @@ export type CueAction =
       transition: TransitionName;
       fadeMs: number;
       targets: { section: number; anchor: number | null; weight: number }[];
+      /** Optional bridge section played before the chosen destination. */
+      bridge?: number | null;
     }
   | { type: 'play'; section: number; anchor: number | null }
   | { type: 'stop'; timing: TimingName; fadeMs: number }
@@ -150,6 +225,12 @@ export interface IamProject {
   cues: Cue[];
   bindings: Binding[];
   assets: AssetMeta[];
+  /** WCLAP plugin bank. */
+  plugins: WclapPlugin[];
+  /** Instantiated plugins (bank plugin + parameter values). */
+  pluginInstances: PluginInstance[];
+  /** Master bus effect chain: ordered plugin instance ids. */
+  masterEffects: number[];
 }
 
 export type AssetFormat = 'pcm16' | 'f32';
@@ -179,7 +260,39 @@ export function emptyProject(name = 'Untitled'): IamProject {
     cues: [],
     bindings: [],
     assets: [],
+    plugins: [],
+    pluginInstances: [],
+    masterEffects: [],
   };
+}
+
+/** A WCLAP plugin with its binary artifact, used when encoding a pack. */
+export interface EncodePlugin {
+  id: number;
+  name: string;
+  clapPluginId?: string;
+  url?: string;
+  /** Raw `.wclap` bundle bytes to embed; omit to reference `url` only. */
+  data?: Uint8Array;
+}
+
+/**
+ * Fills in fields that may be absent when loading an older project (e.g. a v1
+ * META re-import), so consumers can rely on the v2 arrays existing. Mutates and
+ * returns the same object.
+ */
+export function normalizeProject(project: IamProject): IamProject {
+  project.plugins ??= [];
+  project.pluginInstances ??= [];
+  project.masterEffects ??= [];
+  for (const s of project.sections) {
+    for (const t of s.tracks) {
+      t.kind ??= 'audio';
+      t.items ??= [];
+      if (t.kind === 'instrument') t.notes ??= [];
+    }
+  }
+  return project;
 }
 
 export const TIMING_CODE: Record<TimingName, number> = {
@@ -212,4 +325,24 @@ export interface IamEvent {
   a: number;
   b: number;
   c: number;
+}
+
+/** Status byte values for MIDI events delivered through iam_poll_midi. */
+export const MidiStatus = {
+  NoteOff: 0,
+  NoteOn: 1,
+} as const;
+
+/** A sample-accurate MIDI event emitted by the engine for an instrument track. */
+export interface IamMidiEvent {
+  /** Plugin instance id this event is routed to (track.instrument). */
+  instanceId: number;
+  /** Sample offset from the start of the current process() block. */
+  frameOffset: number;
+  /** One of MidiStatus. */
+  status: number;
+  /** MIDI key 0..127. */
+  key: number;
+  /** Normalized velocity 0..1. */
+  velocity: number;
 }

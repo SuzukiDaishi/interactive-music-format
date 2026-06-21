@@ -5,6 +5,7 @@
 
 import {
   EncodeAsset,
+  EncodePlugin,
   IamProject,
   NONE_ID,
   PACK_MAGIC,
@@ -90,12 +91,22 @@ export class ValidationError extends Error {
 }
 
 /** Structural validation; returns a list of human-readable issues. */
-export function validateProject(project: IamProject, assets: EncodeAsset[]): string[] {
+export function validateProject(
+  project: IamProject,
+  assets: EncodeAsset[],
+  plugins: EncodePlugin[] = [],
+): string[] {
   const issues: string[] = [];
   const secIds = new Set(project.sections.map((s) => s.id));
   const assetIds = new Set(assets.map((a) => a.id));
   const cueIds = new Set(project.cues.map((c) => c.id));
   const rtpcIds = new Set(project.rtpcs.map((r) => r.id));
+  const projPlugins = project.plugins ?? [];
+  const projInstances = project.pluginInstances ?? [];
+  const projMasterEffects = project.masterEffects ?? [];
+  const pluginIds = new Set(projPlugins.map((p) => p.id));
+  const instanceIds = new Set(projInstances.map((p) => p.id));
+  const embeddedBin = new Set(plugins.filter((p) => p.data).map((p) => p.id));
 
   const dupCheck = (label: string, ids: number[]) => {
     const seen = new Set<number>();
@@ -108,6 +119,25 @@ export function validateProject(project: IamProject, assets: EncodeAsset[]): str
   dupCheck('rtpcs', project.rtpcs.map((r) => r.id));
   dupCheck('cues', project.cues.map((c) => c.id));
   dupCheck('assets', assets.map((a) => a.id));
+  dupCheck('plugins', projPlugins.map((p) => p.id));
+  dupCheck('pluginInstances', projInstances.map((p) => p.id));
+
+  for (const p of projPlugins) {
+    if (p.embedded && !embeddedBin.has(p.id) && !p.url) {
+      issues.push(`Plugin '${p.name}': marked embedded but no binary data supplied`);
+    }
+    if (!p.embedded && !p.url) {
+      issues.push(`Plugin '${p.name}': not embedded and has no url`);
+    }
+  }
+  for (const inst of projInstances) {
+    if (!pluginIds.has(inst.pluginBankId)) {
+      issues.push(`PluginInstance ${inst.id}: references missing plugin ${inst.pluginBankId}`);
+    }
+  }
+  for (const e of projMasterEffects) {
+    if (!instanceIds.has(e)) issues.push(`masterEffects: instance ${e} does not exist`);
+  }
 
   const names = new Set<string>();
   for (const s of project.sections) {
@@ -115,10 +145,26 @@ export function validateProject(project: IamProject, assets: EncodeAsset[]): str
     names.add(s.name);
     if (!(s.lengthBeats > 0)) issues.push(`Section '${s.name}': lengthBeats must be > 0`);
     for (const t of s.tracks) {
-      for (const it of t.items) {
-        if (!assetIds.has(it.assetId)) {
-          issues.push(`Section '${s.name}' track '${t.name}': item references missing asset ${it.assetId}`);
+      const where = `Section '${s.name}' track '${t.name}'`;
+      if (t.kind === 'instrument') {
+        if (t.instrument == null || !instanceIds.has(t.instrument)) {
+          issues.push(`${where}: instrument track must reference an existing plugin instance`);
         }
+        if (t.items.length > 0) issues.push(`${where}: instrument track must not have audio items`);
+        for (const n of t.notes ?? []) {
+          if (!(n.key >= 0 && n.key <= 127)) issues.push(`${where}: note key ${n.key} out of range 0..127`);
+          if (!(n.velocity >= 0 && n.velocity <= 1)) issues.push(`${where}: note velocity ${n.velocity} out of range 0..1`);
+          if (!(n.lengthBeats > 0)) issues.push(`${where}: note lengthBeats must be > 0`);
+        }
+      } else {
+        for (const it of t.items) {
+          if (!assetIds.has(it.assetId)) {
+            issues.push(`${where}: item references missing asset ${it.assetId}`);
+          }
+        }
+      }
+      for (const e of t.effects ?? []) {
+        if (!instanceIds.has(e)) issues.push(`${where}: effect instance ${e} does not exist`);
       }
     }
   }
@@ -148,6 +194,10 @@ export function validateProject(project: IamProject, assets: EncodeAsset[]): str
         const where = `Cue '${c.name}' rule ${ri + 1}`;
         switch (a.type) {
           case 'goto':
+            checkSecRef(where, a.section);
+            checkAnchorRef(where, a.section, a.anchor);
+            if (a.bridge != null) checkSecRef(`${where} (bridge)`, a.bridge);
+            break;
           case 'play':
             checkSecRef(where, a.section);
             checkAnchorRef(where, a.section, a.anchor);
@@ -158,6 +208,7 @@ export function validateProject(project: IamProject, assets: EncodeAsset[]): str
               checkSecRef(where, t.section);
               checkAnchorRef(where, t.section, t.anchor);
             }
+            if (a.bridge != null) checkSecRef(`${where} (bridge)`, a.bridge);
             break;
           case 'setTrackGain': {
             checkSecRef(where, a.section);
@@ -233,6 +284,7 @@ function writeAction(w: Writer, a: CueAction) {
       w.u8(a.transition === 'crossfade' ? 1 : 0);
       w.u16(0);
       w.f32(a.fadeMs);
+      w.u32(idOrNone(a.bridge ?? null));
       break;
     case 'play':
       w.u8(0x02);
@@ -287,6 +339,7 @@ function writeAction(w: Writer, a: CueAction) {
       w.u8(a.transition === 'crossfade' ? 1 : 0);
       w.u8(0);
       w.f32(a.fadeMs);
+      w.u32(idOrNone(a.bridge ?? null));
       for (const t of a.targets) {
         w.u32(t.section);
         w.u32(idOrNone(t.anchor));
@@ -314,13 +367,14 @@ export interface EncodeOptions {
   includeMeta?: boolean;
 }
 
-/** Encodes a project + audio assets into IAMP pack bytes. */
+/** Encodes a project + audio assets (+ optional WCLAP binaries) into IAMP bytes. */
 export function encodePack(
   project: IamProject,
   assets: EncodeAsset[],
   options: EncodeOptions = {},
+  plugins: EncodePlugin[] = [],
 ): Uint8Array {
-  const issues = validateProject(project, assets);
+  const issues = validateProject(project, assets, plugins);
   if (issues.length > 0) throw new ValidationError(issues);
 
   const includeMeta = options.includeMeta !== false;
@@ -380,9 +434,13 @@ export function encodePack(
         w.f32(t.volume);
         w.f32(t.pan);
         w.u8(t.muted ? 1 : 0);
+        w.u8(t.kind === 'instrument' ? 1 : 0);
         w.u8(0);
         w.u8(0);
-        w.u8(0);
+        w.u32(idOrNone(t.instrument ?? null));
+        const effects = t.effects ?? [];
+        w.u16(effects.length);
+        for (const e of effects) w.u32(e);
         w.u32(t.items.length);
         for (const it of t.items) {
           w.u32(it.id);
@@ -393,6 +451,16 @@ export function encodePack(
           w.f32(it.gain);
           w.f32(it.fadeInBeats);
           w.f32(it.fadeOutBeats);
+        }
+        const notes = t.notes ?? [];
+        w.u32(notes.length);
+        for (const n of notes) {
+          w.f32(n.startBeat);
+          w.f32(n.lengthBeats);
+          w.u8(n.key & 0x7f);
+          w.u8(n.channel & 0x0f);
+          w.u16(0);
+          w.f32(n.velocity);
         }
       }
       w.u32(s.anchors.length);
@@ -471,6 +539,53 @@ export function encodePack(
       for (let p = 0; p < pad; p++) w.u8(0);
     }
     chunks.push({ id: 'ABNK', body: w.result() });
+  }
+
+  // WCLP (WCLAP plugin bank). Embedded binaries are looked up from `plugins`.
+  {
+    const binById = new Map<number, Uint8Array | undefined>();
+    for (const p of plugins) binById.set(p.id, p.data);
+    const w = new Writer();
+    const projPlugins = project.plugins ?? [];
+    w.u32(projPlugins.length);
+    for (const p of projPlugins) {
+      const data = p.embedded ? binById.get(p.id) : undefined;
+      w.u32(p.id);
+      w.str(p.name);
+      w.str(p.clapPluginId ?? '');
+      w.str(p.url ?? '');
+      w.u8(p.embedded && data ? 1 : 0);
+      w.u8(0);
+      w.u16(0);
+      const bytes = p.embedded && data ? data : new Uint8Array(0);
+      w.u32(bytes.length);
+      w.bytes(bytes);
+      const pad = (4 - (bytes.length % 4)) % 4;
+      for (let i = 0; i < pad; i++) w.u8(0);
+    }
+    chunks.push({ id: 'WCLP', body: w.result() });
+  }
+
+  // PINS (plugin instances + master effect chain)
+  {
+    const w = new Writer();
+    const projInstances = project.pluginInstances ?? [];
+    const projMasterEffects = project.masterEffects ?? [];
+    w.u32(projInstances.length);
+    for (const inst of projInstances) {
+      w.u32(inst.id);
+      w.u32(inst.pluginBankId);
+      w.str(inst.clapPluginId ?? '');
+      w.u16(inst.params.length);
+      w.u16(0);
+      for (const p of inst.params) {
+        w.u32(p.id);
+        w.f32(p.value);
+      }
+    }
+    w.u32(projMasterEffects.length);
+    for (const e of projMasterEffects) w.u32(e);
+    chunks.push({ id: 'PINS', body: w.result() });
   }
 
   // META (project JSON for re-import; the engine skips unknown chunks)

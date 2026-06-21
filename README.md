@@ -15,6 +15,8 @@ WASM が動く場所（ブラウザ / Node.js / ゲームエンジン / 組み�
 - 🔀 **分岐**: 聴くたびに変わる音楽（重み付きランダム遷移、シード制御可）
 - 🔁 **ループ＋終止**: ループ前提の曲を「ボタンを押すと終わり始めて、音楽的に終わる」
 - ⏩ **ホストからの無茶**: 再生速度変更・逆再生・フリーズ・シークも仕様として定義済み
+- 🎹 **MIDI トラック + WCLAP プラグイン** (v2): [WebCLAP](https://wclap.plinken.org/) のシンセ/エフェクト（wasm32 CLAP）を内包し、instrument トラックを実時間合成（JS/AudioWorklet ホスト）
+- 🪄 **横遷移ブリッジ** (v2): セクション間をブリッジ（フィル/スティンガー）で音楽的に繋ぐ `goto bridge`
 
 このリポジトリには **仕様・再生エンジン・Web DAW・プレイヤーライブラリ・デモ**のすべてが含まれます。
 
@@ -83,6 +85,7 @@ music.setRate(-1);               // 逆再生だってできる
 | [docs/03_cue_vm_spec.md](./docs/03_cue_vm_spec.md) | Cue VM / 条件式言語 |
 | [docs/04_host_api_spec.md](./docs/04_host_api_spec.md) | WASM ABI / JS プレイヤー API |
 | [docs/05_runtime_behavior.md](./docs/05_runtime_behavior.md) | 再生セマンティクス（遷移・逆再生・上限） |
+| [docs/06_wclap_midi_bridges.md](./docs/06_wclap_midi_bridges.md) | WCLAP プラグイン・MIDI トラック・横遷移ブリッジ (v2) |
 
 ## 開発
 

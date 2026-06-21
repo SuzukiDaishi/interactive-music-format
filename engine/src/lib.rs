@@ -238,3 +238,31 @@ pub extern "C" fn iam_poll_event(out_ptr: *mut u8) -> u32 {
     }
     1
 }
+
+/// Writes a 16-byte MIDI record to `out_ptr` and returns 1, or returns 0 when
+/// the queue is empty. Layout: { u32 instance, u32 frame_offset, u8 status,
+/// u8 key, u8 channel, u8 pad, f32 velocity }. See docs/06_wclap_midi_bridges.md.
+#[no_mangle]
+pub extern "C" fn iam_poll_midi(out_ptr: *mut u8) -> u32 {
+    let Some(r) = rt() else {
+        return 0;
+    };
+    let Some(m) = r.poll_midi() else {
+        return 0;
+    };
+    if out_ptr.is_null() {
+        return 0;
+    }
+    unsafe {
+        let p = out_ptr as *mut u32;
+        p.write_unaligned(m.instance);
+        p.add(1).write_unaligned(m.frame_offset);
+        let b = out_ptr.add(8);
+        b.write_unaligned(m.status);
+        b.add(1).write_unaligned(m.key);
+        b.add(2).write_unaligned(m.channel);
+        b.add(3).write_unaligned(0);
+        (out_ptr.add(12) as *mut f32).write_unaligned(m.velocity);
+    }
+    1
+}

@@ -13,9 +13,28 @@ use std::collections::VecDeque;
 const EPS: f64 = 1e-6;
 const MAX_CHUNK: usize = 256;
 const MAX_EVENTS: usize = 256;
+const MAX_MIDI: usize = 512;
 const MAX_CUE_DEPTH: u32 = 8;
 const MAX_PLAYERS: usize = 8;
 const MAX_ONESHOTS: usize = 16;
+
+// MIDI event status bytes (see docs/06_wclap_midi_bridges.md)
+pub const MIDI_NOTE_OFF: u8 = 0;
+pub const MIDI_NOTE_ON: u8 = 1;
+pub const MIDI_ALL_NOTES_OFF: u8 = 2;
+
+/// A sample-accurate MIDI event routed to a plugin instance. `frame_offset` is
+/// the sample offset within the current process() block. For AllNotesOff,
+/// `instance` is NONE_ID (broadcast to every instrument).
+#[derive(Clone, Copy)]
+pub struct MidiEvt {
+    pub instance: u32,
+    pub frame_offset: u32,
+    pub status: u8,
+    pub key: u8,
+    pub channel: u8,
+    pub velocity: f32,
+}
 
 // Event types (see docs/04_host_api_spec.md)
 pub const EV_SECTION_CHANGED: u32 = 1;
@@ -45,6 +64,18 @@ struct SecDerived {
     anchors: Vec<(u32, f64)>,
     /// Per track: per item (start, length, offset, fade_in, fade_out) in samples.
     items: Vec<Vec<ItemDerived>>,
+    /// Note on/off events (bank samples) for instrument tracks, sorted by pos.
+    notes: Vec<NoteEvt>,
+}
+
+#[derive(Clone, Copy)]
+struct NoteEvt {
+    pos: f64,
+    instance: u32,
+    status: u8,
+    key: u8,
+    channel: u8,
+    velocity: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -133,12 +164,24 @@ struct OneShot {
     gain: f32,
 }
 
+/// The real destination of a bridged transition, played once the bridge
+/// section reaches its end.
+struct GotoThen {
+    section: usize,
+    start_pos: f64,
+    crossfade: bool,
+    fade_ms: f32,
+}
+
 enum PendingKind {
     Goto {
         section: usize,
         start_pos: f64,
         crossfade: bool,
         fade_ms: f32,
+        /// When set, `section` is a one-shot bridge and `then` is the real
+        /// destination scheduled at the bridge's section end.
+        then: Option<GotoThen>,
     },
     Stop {
         fade_ms: f32,
@@ -181,6 +224,9 @@ pub struct Runtime {
     track_gains: Vec<Vec<Smoothed>>,
     loop_flags: Vec<bool>,
     events: VecDeque<Event>,
+    midi: VecDeque<MidiEvt>,
+    /// Output frame index reached within the current process() block.
+    block_frame: usize,
     rng: u64,
     cue_depth: u32,
 }
@@ -226,6 +272,33 @@ impl Runtime {
                         .collect()
                 })
                 .collect();
+            let mut notes: Vec<NoteEvt> = Vec::new();
+            for t in &s.tracks {
+                if t.kind != 1 || t.instrument == NONE_ID {
+                    continue;
+                }
+                for n in &t.notes {
+                    let on = n.start_beat as f64 * spb;
+                    let off = (n.start_beat + n.length_beats) as f64 * spb;
+                    notes.push(NoteEvt {
+                        pos: on,
+                        instance: t.instrument,
+                        status: MIDI_NOTE_ON,
+                        key: n.key,
+                        channel: n.channel,
+                        velocity: n.velocity,
+                    });
+                    notes.push(NoteEvt {
+                        pos: off,
+                        instance: t.instrument,
+                        status: MIDI_NOTE_OFF,
+                        key: n.key,
+                        channel: n.channel,
+                        velocity: 0.0,
+                    });
+                }
+            }
+            notes.sort_by(|a, b| a.pos.partial_cmp(&b.pos).unwrap());
             sec.push(SecDerived {
                 samples_per_beat: spb,
                 length_samples: s.length_beats as f64 * spb,
@@ -233,6 +306,7 @@ impl Runtime {
                 beats_per_bar: tsig_num.max(1) as f64,
                 anchors,
                 items,
+                notes,
             });
         }
 
@@ -270,6 +344,8 @@ impl Runtime {
             track_gains,
             loop_flags,
             events: VecDeque::new(),
+            midi: VecDeque::new(),
+            block_frame: 0,
             rng: 0x853c_49e6_748f_ea9b,
             cue_depth: 0,
         }
@@ -285,6 +361,30 @@ impl Runtime {
 
     pub fn poll_event(&mut self) -> Option<Event> {
         self.events.pop_front()
+    }
+
+    fn push_midi(&mut self, e: MidiEvt) {
+        if self.midi.len() < MAX_MIDI {
+            self.midi.push_back(e);
+        }
+    }
+
+    /// Broadcast an all-notes-off to every instrument at the current frame, used
+    /// when the music cuts away so synth voices do not hang.
+    fn push_all_notes_off(&mut self) {
+        let fo = self.block_frame as u32;
+        self.push_midi(MidiEvt {
+            instance: NONE_ID,
+            frame_offset: fo,
+            status: MIDI_ALL_NOTES_OFF,
+            key: 0,
+            channel: 0,
+            velocity: 0.0,
+        });
+    }
+
+    pub fn poll_midi(&mut self) -> Option<MidiEvt> {
+        self.midi.pop_front()
     }
 
     fn rand01(&mut self) -> f32 {
@@ -331,12 +431,14 @@ impl Runtime {
             p.fade.set(0.0, 0.0, self.out_sr);
         }
         self.reap_players();
+        self.push_all_notes_off();
         self.spawn_main(idx, pos, false, 0.0, NONE_ID);
     }
 
     pub fn stop(&mut self, fade_ms: f32) {
         self.pending = None;
         self.pending_oneshots.clear();
+        self.push_all_notes_off();
         for p in &mut self.players {
             p.dying = true;
             p.fade.set(0.0, fade_ms, self.out_sr);
@@ -627,11 +729,13 @@ impl Runtime {
                 timing,
                 crossfade,
                 fade_ms,
-            } => self.schedule_goto(section, anchor, timing, crossfade, fade_ms),
+                bridge,
+            } => self.schedule_goto(section, anchor, timing, crossfade, fade_ms, bridge),
             Action::GotoRandom {
                 timing,
                 crossfade,
                 fade_ms,
+                bridge,
                 ref targets,
             } => {
                 if targets.is_empty() {
@@ -648,7 +752,7 @@ impl Runtime {
                     }
                     pick -= w;
                 }
-                self.schedule_goto(chosen.0, chosen.1, timing, crossfade, fade_ms);
+                self.schedule_goto(chosen.0, chosen.1, timing, crossfade, fade_ms, bridge);
             }
             Action::Play { section, anchor } => self.play_section(section, anchor),
             Action::Stop { timing, fade_ms } => {
@@ -716,27 +820,66 @@ impl Runtime {
         timing: Timing,
         crossfade: bool,
         fade_ms: f32,
+        bridge: u32,
     ) {
         let Some(si) = sec_index(&self.pack, section) else {
             return;
         };
         let start_pos = self.anchor_pos(si, anchor);
+        // Resolve an optional bridge section; an invalid id degrades to a direct
+        // transition.
+        let bridge_si = if bridge != NONE_ID {
+            sec_index(&self.pack, bridge)
+        } else {
+            None
+        };
+
         if self.main.is_none() {
-            // Nothing is playing: start the target immediately.
+            // Nothing is playing: start the (bridge or) target immediately.
             self.playing = true;
-            self.spawn_main(si, start_pos, false, 0.0, NONE_ID);
+            if let Some(bsi) = bridge_si {
+                self.spawn_main(bsi, 0.0, false, 0.0, NONE_ID);
+                self.pending = Some(Pending {
+                    kind: PendingKind::Goto {
+                        section: si,
+                        start_pos,
+                        crossfade,
+                        fade_ms,
+                        then: None,
+                    },
+                    at: self.sec[bsi].length_samples,
+                });
+            } else {
+                self.spawn_main(si, start_pos, false, 0.0, NONE_ID);
+            }
             return;
         }
+
         let at = self.timing_pos(timing);
-        self.pending = Some(Pending {
-            kind: PendingKind::Goto {
+        let kind = if let Some(bsi) = bridge_si {
+            // Play the bridge once, then route to the real destination.
+            PendingKind::Goto {
+                section: bsi,
+                start_pos: 0.0,
+                crossfade,
+                fade_ms,
+                then: Some(GotoThen {
+                    section: si,
+                    start_pos,
+                    crossfade,
+                    fade_ms,
+                }),
+            }
+        } else {
+            PendingKind::Goto {
                 section: si,
                 start_pos,
                 crossfade,
                 fade_ms,
-            },
-            at,
-        });
+                then: None,
+            }
+        };
+        self.pending = Some(Pending { kind, at });
         self.push_event(EV_GOTO_SCHEDULED, section, anchor, at as f32);
     }
 
@@ -763,6 +906,7 @@ impl Runtime {
                 start_pos,
                 crossfade,
                 fade_ms,
+                then,
             } => {
                 let from_id = self.current_section();
                 if let Some(mi) = self.main.take() {
@@ -773,7 +917,22 @@ impl Runtime {
                         .set(0.0, if crossfade { fade_ms } else { 0.0 }, out_sr);
                 }
                 self.reap_players();
+                // Stop any sounding synth voices before the cut.
+                self.push_all_notes_off();
                 self.spawn_main(section, start_pos, crossfade, fade_ms, from_id);
+                if let Some(th) = then {
+                    // Schedule the real destination at the bridge's section end.
+                    self.pending = Some(Pending {
+                        kind: PendingKind::Goto {
+                            section: th.section,
+                            start_pos: th.start_pos,
+                            crossfade: th.crossfade,
+                            fade_ms: th.fade_ms,
+                            then: None,
+                        },
+                        at: self.sec[section].length_samples,
+                    });
+                }
             }
             PendingKind::Stop { fade_ms } => self.stop(fade_ms),
         }
@@ -803,6 +962,9 @@ impl Runtime {
             if guard > 4096 {
                 break; // safety net against scheduling bugs
             }
+            // Track the output frame reached so MIDI events carry an offset
+            // within this process() block.
+            self.block_frame = done;
             // 1) Fire anything already due at the current position.
             self.fire_due();
             if self.players.is_empty() && self.oneshots.is_empty() {
@@ -815,6 +977,7 @@ impl Runtime {
                 .max(1)
                 .min(remaining);
             // 3) Render.
+            let chunk_start = done;
             let old_pos = self.main.map(|mi| self.players[mi].pos);
             self.render_chunk(&mut out[done * self.out_ch..], n);
             self.advance_smoothers(n);
@@ -822,7 +985,7 @@ impl Runtime {
             // 4) Fire boundaries crossed inside (old_pos, new_pos].
             if let (Some(op), Some(mi)) = (old_pos, self.main) {
                 let np = self.players[mi].pos;
-                self.fire_crossed(op, np);
+                self.fire_crossed(op, np, chunk_start, frames);
             }
             self.reap_players();
         }
@@ -981,8 +1144,11 @@ impl Runtime {
         f.clamp(1, max)
     }
 
-    /// Fire beat/bar/anchor triggers crossed in (old, new] (direction aware).
-    fn fire_crossed(&mut self, old: f64, new: f64) {
+    /// Fire beat/bar/anchor triggers crossed in (old, new] (direction aware) and
+    /// emit MIDI note events for the main section's instrument tracks.
+    /// `chunk_start` is the output frame at `old`; `block_frames` is the size of
+    /// the whole process() block (used to clamp MIDI frame offsets).
+    fn fire_crossed(&mut self, old: f64, new: f64, chunk_start: usize, block_frames: usize) {
         let Some(mi) = self.main else {
             return;
         };
@@ -1002,6 +1168,38 @@ impl Runtime {
                 b >= lo - EPS && b < hi - EPS
             }
         };
+
+        // MIDI: emit instrument note events crossed in this chunk. Only forward
+        // playback drives synths (reverse note-on/off is musically undefined).
+        if fwd {
+            let step = self.step_bank();
+            let notes: Vec<MidiEvt> = self.sec[sec_idx]
+                .notes
+                .iter()
+                .filter(|n| in_range(n.pos))
+                .map(|n| {
+                    let rel = if step.abs() > 1e-12 {
+                        ((n.pos - old) / step).round() as i64
+                    } else {
+                        0
+                    };
+                    let fo = (chunk_start as i64 + rel)
+                        .clamp(0, block_frames.saturating_sub(1) as i64)
+                        as u32;
+                    MidiEvt {
+                        instance: n.instance,
+                        frame_offset: fo,
+                        status: n.status,
+                        key: n.key,
+                        channel: n.channel,
+                        velocity: n.velocity,
+                    }
+                })
+                .collect();
+            for e in notes {
+                self.push_midi(e);
+            }
+        }
 
         let anchors: Vec<(u32, f64)> = self.sec[sec_idx]
             .anchors

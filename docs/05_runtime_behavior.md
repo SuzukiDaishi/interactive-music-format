@@ -41,6 +41,15 @@
 
 `stop(timing)` も同じ pending 機構で「音楽的な位置で止まる」を実現する。
 
+### 4.1 横遷移（bridge / トランジションセグメント, v2）
+
+`goto`/`gotoRandom` に `bridge`（Section id）を指定すると、遷移は
+**A → bridge → 目的地**を経由する。`at` 到達時に bridge をワンショット（ループ無効化）
+として新 main にスポーンし、bridge の**セクション終端**で本来の目的地への遷移を
+後続 pending として予約する（§5 の機構を再利用）。`sectionChanged` は A→bridge、
+bridge→目的地の 2 回発火。無効な bridge id は直接遷移へデグレード。
+詳細は [06_wclap_midi_bridges.md](./06_wclap_midi_bridges.md)。
+
 ## 5. Section 終端の処理順序（順方向）
 
 ```txt
@@ -85,6 +94,15 @@ sample = Σ players Σ tracks Σ items
 - 出力 1ch 指定時は L/R 平均でダウンミックス。
 - Item のフェードイン/アウトは拍単位の線形フェード。
 - クリッピングは行わない（ホスト側でリミッタを掛けること）。
+
+### 8.1 MIDI（instrument トラック, v2）
+
+- instrument トラックのノートは PCM ミックスには寄与せず、`iam_poll_midi` 経由で
+  サンプル精度の MIDI イベントとして出力される（`frame_offset` 付き）。実際の発音は
+  JS/AudioWorklet 側の WCLAP 楽器プラグインが行う。
+- **前進再生のみ**発火。セクション切替・`stop` 時に All-Notes-Off を broadcast。
+- MIDI を発火するのは main プレイヤーの Section のみ（fading/bridge 元の旧プレイヤーは
+  発火しない）。詳細は [06_wclap_midi_bridges.md](./06_wclap_midi_bridges.md)。
 
 ## 9. トリガ発火規則
 

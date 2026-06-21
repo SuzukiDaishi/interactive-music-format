@@ -11,6 +11,7 @@ import {
   NONE_ID,
   PACK_MAGIC,
   PACK_VERSION,
+  PluginInstance,
 } from './model.js';
 
 export interface SectionInfo {
@@ -37,6 +38,17 @@ export interface CueInfo {
   name: string;
 }
 
+/** A WCLAP plugin bank entry as decoded from the WCLP chunk. */
+export interface DecodedPlugin {
+  id: number;
+  name: string;
+  clapPluginId: string;
+  url: string;
+  embedded: boolean;
+  /** Embedded `.wclap` bundle bytes, when `embedded` is true. */
+  data?: Uint8Array;
+}
+
 export interface DecodedPack {
   /** Project header fields read from PROJ. */
   name: string;
@@ -51,6 +63,12 @@ export interface DecodedPack {
   /** Full project JSON from the META chunk, when present. */
   project: IamProject | null;
   assets: EncodeAsset[];
+  /** WCLAP plugin bank (with embedded binaries) from the WCLP chunk. */
+  plugins: DecodedPlugin[];
+  /** Plugin instances from the PINS chunk. */
+  pluginInstances: PluginInstance[];
+  /** Master effect chain (plugin instance ids) from the PINS chunk. */
+  masterEffects: number[];
 }
 
 class Reader {
@@ -101,7 +119,7 @@ class Reader {
 }
 
 const ACTION_PAYLOAD_SIZE: Record<number, number> = {
-  0x01: 16, // goto
+  0x01: 20, // goto (+ bridge u32)
   0x02: 8, // play
   0x03: 8, // stop
   0x04: 16, // setTrackGain
@@ -115,7 +133,8 @@ function skipAction(r: Reader) {
   const op = r.u8();
   if (op === 0x09) {
     const count = r.u8();
-    r.bytes(3 + 4 + count * 12);
+    // timing+transition+pad (3) + fadeMs (4) + bridge (4) + targets (count*12)
+    r.bytes(3 + 4 + 4 + count * 12);
     return;
   }
   const size = ACTION_PAYLOAD_SIZE[op];
@@ -142,6 +161,9 @@ export function decodePack(pack: Uint8Array): DecodedPack {
     cues: [],
     project: null,
     assets: [],
+    plugins: [],
+    pluginInstances: [],
+    masterEffects: [],
   };
 
   for (let i = 0; i < chunkCount; i++) {
@@ -238,12 +260,18 @@ export function decodePack(pack: Uint8Array): DecodedPack {
         for (let t = 0; t < trackCount; t++) {
           const tid = cr.u32();
           const tname = cr.str();
-          cr.f32();
-          cr.f32();
-          cr.u8();
-          cr.bytes(3);
+          cr.f32(); // volume
+          cr.f32(); // pan
+          cr.u8(); // muted
+          cr.u8(); // kind
+          cr.bytes(2); // pad
+          cr.u32(); // instrument instance (NONE for audio)
+          const effectCount = cr.u16();
+          cr.bytes(effectCount * 4);
           const itemCount = cr.u32();
           cr.bytes(itemCount * 32); // items are fixed 32 bytes
+          const noteCount = cr.u32();
+          cr.bytes(noteCount * 16); // notes are fixed 16 bytes
           tracks.push({ id: tid, name: tname });
         }
         const anchorCount = cr.u32();
@@ -272,6 +300,46 @@ export function decodePack(pack: Uint8Array): DecodedPack {
         out.cues.push({ id: cid, name });
       }
       // bindings are skipped (rest of the chunk)
+    } else if (id === 'WCLP') {
+      const count = cr.u32();
+      for (let k = 0; k < count; k++) {
+        const pid = cr.u32();
+        const name = cr.str();
+        const clapPluginId = cr.str();
+        const url = cr.str();
+        const flags = cr.u8();
+        cr.u8();
+        cr.u16();
+        const binLen = cr.u32();
+        const embedded = (flags & 1) !== 0;
+        let data: Uint8Array | undefined;
+        if (binLen > 0) data = cr.bytes(binLen).slice();
+        cr.bytes((4 - (binLen % 4)) % 4);
+        out.plugins.push({ id: pid, name, clapPluginId, url, embedded, data });
+      }
+    } else if (id === 'PINS') {
+      const count = cr.u32();
+      for (let k = 0; k < count; k++) {
+        const iid = cr.u32();
+        const bankId = cr.u32();
+        const clapPluginId = cr.str();
+        const paramCount = cr.u16();
+        cr.u16();
+        const params: { id: number; value: number }[] = [];
+        for (let p = 0; p < paramCount; p++) {
+          const pid = cr.u32();
+          const value = cr.f32();
+          params.push({ id: pid, value });
+        }
+        out.pluginInstances.push({
+          id: iid,
+          pluginBankId: bankId,
+          clapPluginId: clapPluginId || undefined,
+          params,
+        });
+      }
+      const mCount = cr.u32();
+      for (let m = 0; m < mCount; m++) out.masterEffects.push(cr.u32());
     } else if (id === 'META') {
       try {
         const meta = JSON.parse(new TextDecoder().decode(body));

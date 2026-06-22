@@ -175,6 +175,38 @@ pub extern "C" fn iam_get_rtpc(rtpc_id: u32) -> f32 {
     rt().map(|r| r.get_rtpc(rtpc_id)).unwrap_or(0.0)
 }
 
+/// Sets a track's linear volume live (no rebuild needed).
+#[no_mangle]
+pub extern "C" fn iam_set_track_volume(section_id: u32, track_id: u32, value: f32) {
+    if let Some(r) = rt() {
+        r.set_track_volume(section_id, track_id, value);
+    }
+}
+
+/// Sets a track's pan live (-1 left .. 1 right).
+#[no_mangle]
+pub extern "C" fn iam_set_track_pan(section_id: u32, track_id: u32, value: f32) {
+    if let Some(r) = rt() {
+        r.set_track_pan(section_id, track_id, value);
+    }
+}
+
+/// Mutes (non-zero) or unmutes (0) a track live.
+#[no_mangle]
+pub extern "C" fn iam_set_track_mute(section_id: u32, track_id: u32, muted: u32) {
+    if let Some(r) = rt() {
+        r.set_track_mute(section_id, track_id, muted != 0);
+    }
+}
+
+/// Effective linear gain (volume/mute) for an instrument instance in the
+/// currently playing section. Hosts that render synths externally multiply the
+/// synth output by this each block so instrument tracks honor the mixer.
+#[no_mangle]
+pub extern "C" fn iam_instrument_gain(instance_id: u32) -> f32 {
+    rt().map(|r| r.instrument_gain(instance_id)).unwrap_or(1.0)
+}
+
 #[no_mangle]
 pub extern "C" fn iam_set_rate(rate: f32) {
     if let Some(r) = rt() {

@@ -612,7 +612,12 @@ export function Timeline() {
               <div className="track-controls">
                 <button
                   className={t.muted ? 'mute on' : 'mute'}
-                  onClick={() => store.update(() => (t.muted = !t.muted))}
+                  onClick={() =>
+                    store.update(() => {
+                      t.muted = !t.muted;
+                      preview.setTrackMute(section.id, t.id, t.muted);
+                    })
+                  }
                 >
                   M
                 </button>
@@ -623,7 +628,12 @@ export function Timeline() {
                   step={0.01}
                   value={t.volume}
                   title={`Volume ${t.volume.toFixed(2)}`}
-                  onChange={(e) => store.update(() => (t.volume = Number(e.target.value)))}
+                  onChange={(e) =>
+                    store.update(() => {
+                      t.volume = Number(e.target.value);
+                      preview.setTrackVolume(section.id, t.id, t.volume);
+                    })
+                  }
                 />
                 <input
                   type="range"
@@ -633,8 +643,18 @@ export function Timeline() {
                   className="pan"
                   value={t.pan}
                   title={`Pan ${t.pan.toFixed(2)}`}
-                  onDoubleClick={() => store.update(() => (t.pan = 0))}
-                  onChange={(e) => store.update(() => (t.pan = Number(e.target.value)))}
+                  onDoubleClick={() =>
+                    store.update(() => {
+                      t.pan = 0;
+                      preview.setTrackPan(section.id, t.id, 0);
+                    })
+                  }
+                  onChange={(e) =>
+                    store.update(() => {
+                      t.pan = Number(e.target.value);
+                      preview.setTrackPan(section.id, t.id, t.pan);
+                    })
+                  }
                 />
                 <button
                   title="Delete track"

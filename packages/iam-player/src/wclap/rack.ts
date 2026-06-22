@@ -97,7 +97,7 @@ export class WclapRack {
    * Renders into the interleaved stereo `bus` (length >= frames*2), which starts
    * as the engine PCM mix and is overwritten with the final mix.
    */
-  render(bus: Float32Array, frames: number): void {
+  render(bus: Float32Array, frames: number, gain?: (instanceId: number) => number): void {
     const L = this.scratchL;
     const R = this.scratchR;
     for (let i = 0; i < frames; i++) {
@@ -105,14 +105,17 @@ export class WclapRack {
       R[i] = bus[i * 2 + 1];
     }
     // Sum instrument instances (each through its insert chain) into the bus.
+    // `gain` (optional) applies the instrument track's live volume/mute so the
+    // synth honors the mixer just like PCM tracks.
     for (const ins of this.routing.instruments) {
       const inst = this.instances.get(ins.instanceId);
       if (!inst) continue;
+      const g = gain ? gain(ins.instanceId) : 1;
       const dry = inst.process(frames);
       const wet = this.chain(ins.effects, dry.left, dry.right, frames);
       for (let i = 0; i < frames; i++) {
-        L[i] += wet.l[i];
-        R[i] += wet.r[i];
+        L[i] += wet.l[i] * g;
+        R[i] += wet.r[i] * g;
       }
     }
     // Master effect chain.

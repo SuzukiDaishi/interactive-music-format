@@ -40,6 +40,10 @@ export interface EngineExports {
   iam_get_position_samples(): number;
   iam_poll_event(outPtr: number): number;
   iam_poll_midi?(outPtr: number): number;
+  iam_set_track_volume?(sectionId: number, trackId: number, value: number): void;
+  iam_set_track_pan?(sectionId: number, trackId: number, value: number): void;
+  iam_set_track_mute?(sectionId: number, trackId: number, muted: number): void;
+  iam_instrument_gain?(instanceId: number): number;
 }
 
 const LOAD_ERRORS: Record<number, string> = {
@@ -211,6 +215,29 @@ export class IamCore {
   getRtpc(rtpc: string | number): number {
     const id = typeof rtpc === 'string' ? this.rtpcId(rtpc) : rtpc;
     return this.exports.iam_get_rtpc(id);
+  }
+
+  // -- live mixer ------------------------------------------------------------
+
+  /** Sets a track's volume live (heard on the next rendered block). */
+  setTrackVolume(sectionId: number, trackId: number, value: number): void {
+    this.exports.iam_set_track_volume?.(sectionId, trackId, value);
+  }
+
+  /** Sets a track's pan live (-1 left .. 1 right). */
+  setTrackPan(sectionId: number, trackId: number, value: number): void {
+    this.exports.iam_set_track_pan?.(sectionId, trackId, value);
+  }
+
+  /** Mutes/unmutes a track live. */
+  setTrackMute(sectionId: number, trackId: number, muted: boolean): void {
+    this.exports.iam_set_track_mute?.(sectionId, trackId, muted ? 1 : 0);
+  }
+
+  /** Effective volume/mute gain for an instrument instance in the playing
+   *  section; hosts rendering synths externally multiply output by this. */
+  instrumentGain(instanceId: number): number {
+    return this.exports.iam_instrument_gain?.(instanceId) ?? 1;
   }
 
   get currentSection(): string | null {

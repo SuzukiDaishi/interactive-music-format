@@ -5,6 +5,7 @@ import { AssetPanel } from './components/AssetPanel';
 import { Timeline } from './components/Timeline';
 import { RtpcPanel } from './components/RtpcPanel';
 import { CuePanel } from './components/CuePanel';
+import { PluginPanel } from './components/PluginPanel';
 import { EventLog } from './components/EventLog';
 import { store, useStore } from './store';
 import { loadDemoProject } from './demo';
@@ -31,6 +32,14 @@ export function App() {
           st.selection = { kind: 'none' };
         });
         e.preventDefault();
+      } else if (sel.kind === 'note') {
+        store.update((st) => {
+          const section = st.project.sections.find((x) => x.id === sel.sectionId);
+          const track = section?.tracks.find((t) => t.id === sel.trackId);
+          if (track?.notes) track.notes.splice(sel.noteIndex, 1);
+          st.selection = { kind: 'none' };
+        });
+        e.preventDefault();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -54,6 +63,7 @@ export function App() {
         </div>
         <div className="col right">
           <RtpcPanel />
+          <PluginPanel />
           <CuePanel />
           <EventLog />
         </div>

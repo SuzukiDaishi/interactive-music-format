@@ -23,8 +23,8 @@ export function TopBar() {
   const openFile = async (f: File) => {
     try {
       const bytes = new Uint8Array(await f.arrayBuffer());
-      const { project, assets } = importIamWasm(bytes);
-      store.loadProject(project, assets);
+      const { project, assets, bundles } = importIamWasm(bytes);
+      store.loadProject(project, assets, bundles);
     } catch (e) {
       alert(`Open failed:\n${e instanceof Error ? e.message : e}`);
     }

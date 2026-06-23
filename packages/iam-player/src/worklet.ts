@@ -68,14 +68,16 @@ function makeInstance(module, opts){
   dv().setUint32(proc+16,opts.audioInputs?aIn:0,true);dv().setUint32(proc+20,aOut,true);
   dv().setUint32(proc+24,opts.audioInputs,true);dv().setUint32(proc+28,1,true);
   dv().setUint32(proc+32,inEv,true);dv().setUint32(proc+36,outEv,true);
-  function note(status,key,ch,vel,time){const e=new Uint8Array(40);const v=new DataView(e.buffer);v.setUint32(0,40,true);v.setUint32(4,time,true);v.setUint16(10,status,true);v.setInt32(16,-1,true);v.setInt16(22,ch,true);v.setInt16(24,key,true);v.setFloat64(32,vel,true);events.push({time,bytes:e});}
+  // CLAP event types: NOTE_ON=0, NOTE_OFF=1 (NOT the engine's MIDI status
+  // bytes, where on=1/off=0 — passing those here silenced every synth).
+  function note(clapType,key,ch,vel,time){const e=new Uint8Array(40);const v=new DataView(e.buffer);v.setUint32(0,40,true);v.setUint32(4,time,true);v.setUint16(10,clapType,true);v.setInt32(16,-1,true);v.setInt16(22,ch,true);v.setInt16(24,key,true);v.setFloat64(32,vel,true);events.push({time,bytes:e});}
   function setParam(id,value,time){const e=new Uint8Array(48);const v=new DataView(e.buffer);v.setUint32(0,48,true);v.setUint32(4,time,true);v.setUint16(10,5,true);v.setUint32(16,id>>>0,true);v.setInt32(24,-1,true);v.setInt16(28,-1,true);v.setInt16(30,-1,true);v.setInt16(32,-1,true);v.setFloat64(40,value,true);events.push({time,bytes:e});}
   for(const p of (opts.params||[]))setParam(p.id,p.value,0);
   return {
     audioInputs:opts.audioInputs,
-    noteOn:(k,ch,vel,t)=>{note(1,k,ch,vel,t);activeNotes.add(k|(ch<<8));},
-    noteOff:(k,ch,t)=>{note(0,k,ch,0,t);activeNotes.delete(k|(ch<<8));},
-    allNotesOff:(t)=>{for(const k of[...activeNotes]){note(0,k&0xff,(k>>8)&0xff,0,t);activeNotes.delete(k);}},
+    noteOn:(k,ch,vel,t)=>{note(0,k,ch,vel,t);activeNotes.add(k|(ch<<8));},
+    noteOff:(k,ch,t)=>{note(1,k,ch,0,t);activeNotes.delete(k|(ch<<8));},
+    allNotesOff:(t)=>{for(const k of[...activeNotes]){note(1,k&0xff,(k>>8)&0xff,0,t);activeNotes.delete(k);}},
     setParam,
     process:(frames,iL,iR)=>{
       events.sort((a,b)=>a.time-b.time); inEventPtrs=[];
@@ -179,9 +181,12 @@ class IamProcessor extends AudioWorkletProcessor {
     for (const ins of rk.routing.instruments) {
       const inst = rk.map.get(ins.instanceId);
       if (!inst) continue;
+      // The synth is rendered here, so apply the instrument track's live
+      // volume/mute (the engine owns the mixer state for both PCM and synth).
+      const g = this.ex.iam_instrument_gain ? this.ex.iam_instrument_gain(ins.instanceId >>> 0) : 1;
       const dry = inst.process(frames);
       const wet = this.chain(ins.effects, dry.left, dry.right, frames);
-      for (let i = 0; i < frames; i++) { L[i] += wet.l[i]; R[i] += wet.r[i]; }
+      for (let i = 0; i < frames; i++) { L[i] += wet.l[i] * g; R[i] += wet.r[i] * g; }
     }
     const m = this.chain(rk.routing.masterEffects, L, R, frames);
     if (m.l !== L) for (let i = 0; i < frames; i++) { L[i] = m.l[i]; R[i] = m.r[i]; }
@@ -201,6 +206,9 @@ class IamProcessor extends AudioWorkletProcessor {
       case 'seed': ex.iam_set_seed(m.value >>> 0); break;
       case 'rtpc': ex.iam_set_rtpc(m.id >>> 0, m.value); break;
       case 'cue': ex.iam_trigger_cue(m.id >>> 0); break;
+      case 'trackVolume': if (ex.iam_set_track_volume) ex.iam_set_track_volume(m.section >>> 0, m.track >>> 0, m.value); break;
+      case 'trackPan': if (ex.iam_set_track_pan) ex.iam_set_track_pan(m.section >>> 0, m.track >>> 0, m.value); break;
+      case 'trackMute': if (ex.iam_set_track_mute) ex.iam_set_track_mute(m.section >>> 0, m.track >>> 0, m.muted ? 1 : 0); break;
     }
   }
 

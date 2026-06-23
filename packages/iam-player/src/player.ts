@@ -311,6 +311,22 @@ export class IamPlayer {
     this.post({ type: 'seek', beats });
   }
 
+  /**
+   * Live mixer: change a track's volume/pan/mute during playback without
+   * rebuilding the module. Applies to PCM and instrument (synth) tracks alike.
+   */
+  setTrackVolume(sectionId: number, trackId: number, value: number): void {
+    this.post({ type: 'trackVolume', section: sectionId, track: trackId, value });
+  }
+
+  setTrackPan(sectionId: number, trackId: number, value: number): void {
+    this.post({ type: 'trackPan', section: sectionId, track: trackId, value });
+  }
+
+  setTrackMute(sectionId: number, trackId: number, muted: boolean): void {
+    this.post({ type: 'trackMute', section: sectionId, track: trackId, muted });
+  }
+
   setSeed(seed: number): void {
     this.post({ type: 'seed', value: seed });
   }

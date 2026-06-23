@@ -6,7 +6,7 @@
 //! scheduled transition, section end), so transitions are sample-accurate
 //! even at non-1.0 or negative playback rates.
 
-use crate::pack::{Action, Pack, Timing, Trigger, NONE_ID};
+use crate::pack::{Action, Pack, Timing, Track, Trigger, NONE_ID};
 use crate::vm;
 use std::collections::VecDeque;
 
@@ -507,6 +507,58 @@ impl Runtime {
 
     pub fn position_samples(&self) -> f64 {
         self.main.map(|i| self.players[i].pos).unwrap_or(0.0)
+    }
+
+    // -- live mixer ----------------------------------------------------------
+
+    /// Sets a track's linear volume live. PCM playback reads `track.volume`
+    /// from the pack every block, so the change is heard on the next chunk
+    /// without rebuilding the module. Instrument (synth) tracks pick the value
+    /// up through {@link instrument_gain}.
+    pub fn set_track_volume(&mut self, section_id: u32, track_id: u32, value: f32) {
+        if let Some(t) = self.track_mut(section_id, track_id) {
+            t.volume = value.max(0.0);
+        }
+    }
+
+    /// Sets a track's pan live (-1 left .. 1 right).
+    pub fn set_track_pan(&mut self, section_id: u32, track_id: u32, value: f32) {
+        if let Some(t) = self.track_mut(section_id, track_id) {
+            t.pan = value.clamp(-1.0, 1.0);
+        }
+    }
+
+    /// Mutes/unmutes a track live.
+    pub fn set_track_mute(&mut self, section_id: u32, track_id: u32, muted: bool) {
+        if let Some(t) = self.track_mut(section_id, track_id) {
+            t.muted = muted;
+        }
+    }
+
+    fn track_mut(&mut self, section_id: u32, track_id: u32) -> Option<&mut Track> {
+        let si = sec_index(&self.pack, section_id)?;
+        self.pack.sections[si]
+            .tracks
+            .iter_mut()
+            .find(|t| t.id == track_id)
+    }
+
+    /// Effective linear gain for an instrument instance in the section that is
+    /// currently playing: the host renders the synth itself, so it queries this
+    /// each block to apply the instrument track's volume/mute. Returns 1.0 when
+    /// the instance isn't an instrument in the current section (e.g. a tail that
+    /// outlives a transition), so audio is never silenced unexpectedly.
+    pub fn instrument_gain(&self, instance_id: u32) -> f32 {
+        let Some(mi) = self.main else {
+            return 1.0;
+        };
+        let sec_idx = self.players[mi].section;
+        for t in &self.pack.sections[sec_idx].tracks {
+            if t.kind == 1 && t.instrument == instance_id {
+                return if t.muted { 0.0 } else { t.volume.max(0.0) };
+            }
+        }
+        1.0
     }
 
     // -- RTPC ----------------------------------------------------------------

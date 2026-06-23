@@ -139,6 +139,19 @@ class PreviewEngine {
     this.player?.seekBeats(beats);
   }
 
+  /** Pushes a track mixer change to the running preview (no rebuild). */
+  setTrackVolume(sectionId: number, trackId: number, value: number): void {
+    this.player?.setTrackVolume(sectionId, trackId, value);
+  }
+
+  setTrackPan(sectionId: number, trackId: number, value: number): void {
+    this.player?.setTrackPan(sectionId, trackId, value);
+  }
+
+  setTrackMute(sectionId: number, trackId: number, muted: boolean): void {
+    this.player?.setTrackMute(sectionId, trackId, muted);
+  }
+
   setRtpc(name: string, value: number | boolean | string): void {
     try {
       this.player?.setRtpc(name, value);

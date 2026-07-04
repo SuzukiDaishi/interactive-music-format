@@ -248,6 +248,20 @@ pub extern "C" fn iam_get_position_samples() -> f64 {
     rt().map(|r| r.position_samples()).unwrap_or(0.0)
 }
 
+/// Effective BPM of the playing section (project BPM when idle). Combined
+/// with `iam_get_position_beats` / `iam_is_playing`, hosts build CLAP
+/// transport events for hosted plugins (v3).
+#[no_mangle]
+pub extern "C" fn iam_get_bpm() -> f32 {
+    rt().map(|r| r.bpm()).unwrap_or(120.0)
+}
+
+/// Beats per bar of the playing section (project signature when idle).
+#[no_mangle]
+pub extern "C" fn iam_get_beats_per_bar() -> f32 {
+    rt().map(|r| r.beats_per_bar()).unwrap_or(4.0)
+}
+
 /// Writes a 16-byte event record { u32 type, u32 a, u32 b, f32 c } to
 /// `out_ptr` and returns 1, or returns 0 when the queue is empty.
 #[no_mangle]

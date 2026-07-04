@@ -38,6 +38,9 @@ export interface EngineExports {
   iam_get_section(): number;
   iam_get_position_beats(): number;
   iam_get_position_samples(): number;
+  /** v3 engines; optional so older engine builds still load. */
+  iam_get_bpm?(): number;
+  iam_get_beats_per_bar?(): number;
   iam_poll_event(outPtr: number): number;
   iam_poll_midi?(outPtr: number): number;
   iam_set_track_volume?(sectionId: number, trackId: number, value: number): void;
@@ -254,6 +257,16 @@ export class IamCore {
 
   get positionSeconds(): number {
     return this.exports.iam_get_position_samples() / this.meta.bankSampleRate;
+  }
+
+  /** Effective BPM of the playing section (project BPM when idle; v3). */
+  get bpm(): number {
+    return this.exports.iam_get_bpm?.() ?? this.meta.bpm;
+  }
+
+  /** Beats per bar of the playing section (v3). */
+  get beatsPerBar(): number {
+    return this.exports.iam_get_beats_per_bar?.() ?? this.meta.timeSignature[0] ?? 4;
   }
 
   // -- audio & events --------------------------------------------------------

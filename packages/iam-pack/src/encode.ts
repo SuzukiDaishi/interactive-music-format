@@ -14,7 +14,7 @@ import {
   TIMING_CODE,
   CueAction,
 } from './model.js';
-import { compileExpression } from './expr.js';
+import { compileExpression, compileValueExpression } from './expr.js';
 
 class Writer {
   private buf = new Uint8Array(1024);
@@ -182,6 +182,47 @@ export function validateProject(
       issues.push(`${where}: anchor ${anchor} not found in section '${sec.name}'`);
     }
   };
+  const checkValueExpr = (where: string, src: string | undefined) => {
+    if (src === undefined || !src.trim()) return;
+    try {
+      compileValueExpression(src, project);
+    } catch (e) {
+      issues.push(`${where}: value expression: ${(e as Error).message}`);
+    }
+  };
+  const checkCurve = (where: string, points: { x: number; y: number }[]) => {
+    if (points.length === 0) issues.push(`${where}: curve needs at least one point`);
+    for (let i = 1; i < points.length; i++) {
+      if (!(points[i].x >= points[i - 1].x)) {
+        issues.push(`${where}: curve x values must be ascending`);
+        break;
+      }
+    }
+  };
+
+  for (const b of project.blends ?? []) {
+    const where = `Blend ${b.id}`;
+    if (!rtpcIds.has(b.rtpc)) issues.push(`${where}: RTPC ${b.rtpc} does not exist`);
+    const sec = project.sections.find((s) => s.id === b.section);
+    if (!sec) issues.push(`${where}: section ${b.section} does not exist`);
+    else if (!sec.tracks.some((t) => t.id === b.track)) {
+      issues.push(`${where}: track ${b.track} not in section '${sec.name}'`);
+    }
+    checkCurve(where, b.points);
+  }
+  dupCheck('blends', (project.blends ?? []).map((b) => b.id));
+  for (const [mi, m] of (project.paramMods ?? []).entries()) {
+    const where = `ParamMod ${mi + 1}`;
+    if (!instanceIds.has(m.instance)) issues.push(`${where}: plugin instance ${m.instance} does not exist`);
+    if (!rtpcIds.has(m.rtpc)) issues.push(`${where}: RTPC ${m.rtpc} does not exist`);
+    checkCurve(where, m.points);
+  }
+  for (const [si, s] of (project.noteSources ?? []).entries()) {
+    const where = `NoteSource ${si + 1}`;
+    if (!instanceIds.has(s.generator)) issues.push(`${where}: generator instance ${s.generator} does not exist`);
+    if (!instanceIds.has(s.target)) issues.push(`${where}: target instance ${s.target} does not exist`);
+    if (s.generator === s.target) issues.push(`${where}: generator and target must differ`);
+  }
 
   for (const c of project.cues) {
     for (const [ri, rule] of c.rules.entries()) {
@@ -216,13 +257,41 @@ export function validateProject(
             if (sec && !sec.tracks.some((t) => t.id === a.track)) {
               issues.push(`${where}: track ${a.track} not in section '${sec.name}'`);
             }
+            checkValueExpr(where, a.gainExpr);
             break;
           }
+          case 'gotoTrack': {
+            checkSecRef(where, a.section);
+            const dest = project.sections.find((s) => s.id === a.section);
+            if (dest && !dest.tracks.some((t) => t.id === a.track)) {
+              issues.push(`${where}: track ${a.track} not in section '${dest.name}'`);
+            }
+            if (a.sourceSection !== null) {
+              checkSecRef(`${where} (source)`, a.sourceSection);
+              const src = project.sections.find((s) => s.id === a.sourceSection);
+              if (src && !src.tracks.some((t) => t.id === a.sourceTrack)) {
+                issues.push(`${where}: source track ${a.sourceTrack} not in section '${src.name}'`);
+              }
+              const dt = dest?.tracks.find((t) => t.id === a.track);
+              const st = src?.tracks.find((t) => t.id === a.sourceTrack);
+              if (dt && st && (dt.kind ?? 'audio') !== (st.kind ?? 'audio')) {
+                issues.push(`${where}: gotoTrack source/destination track kinds differ`);
+              }
+            }
+            break;
+          }
+          case 'setPluginParam':
+            if (!instanceIds.has(a.instance)) {
+              issues.push(`${where}: plugin instance ${a.instance} does not exist`);
+            }
+            checkValueExpr(where, a.valueExpr);
+            break;
           case 'setLoop':
             checkSecRef(where, a.section);
             break;
           case 'setRtpc':
             if (!rtpcIds.has(a.rtpc)) issues.push(`${where}: RTPC ${a.rtpc} does not exist`);
+            checkValueExpr(where, a.valueExpr);
             break;
           case 'oneShot':
             if (!assetIds.has(a.asset)) issues.push(`${where}: asset ${a.asset} does not exist`);
@@ -274,7 +343,9 @@ export function validateProject(
   return issues;
 }
 
-function writeAction(w: Writer, a: CueAction) {
+function writeAction(w: Writer, a: CueAction, project: IamProject) {
+  const valueExpr = (src: string | undefined): Uint8Array =>
+    src && src.trim() ? compileValueExpression(src, project) : new Uint8Array(0);
   switch (a.type) {
     case 'goto':
       w.u8(0x01);
@@ -299,13 +370,51 @@ function writeAction(w: Writer, a: CueAction) {
       w.u8(0);
       w.f32(a.fadeMs);
       break;
-    case 'setTrackGain':
-      w.u8(0x04);
+    case 'setTrackGain': {
+      const expr = valueExpr(a.gainExpr);
+      const timing = a.timing ?? 'immediate';
+      if (timing === 'immediate' && expr.length === 0) {
+        // v2-compatible opcode for the plain immediate form.
+        w.u8(0x04);
+        w.u32(a.section);
+        w.u32(a.track);
+        w.f32(a.gain);
+        w.f32(a.fadeMs);
+      } else {
+        w.u8(0x0a);
+        w.u32(a.section);
+        w.u32(a.track);
+        w.f32(a.gain);
+        w.f32(a.fadeMs);
+        w.u8(TIMING_CODE[timing]);
+        w.u8(0);
+        w.u16(expr.length);
+        w.bytes(expr);
+      }
+      break;
+    }
+    case 'gotoTrack':
+      w.u8(0x0b);
       w.u32(a.section);
       w.u32(a.track);
-      w.f32(a.gain);
+      w.u32(idOrNone(a.sourceSection));
+      w.u32(a.sourceSection === null ? NONE_ID : idOrNone(a.sourceTrack));
+      w.u8(TIMING_CODE[a.timing]);
+      w.u8(a.transition === 'crossfade' ? 1 : 0);
+      w.u16(0);
       w.f32(a.fadeMs);
       break;
+    case 'setPluginParam': {
+      const expr = valueExpr(a.valueExpr);
+      w.u8(0x0c);
+      w.u32(a.instance);
+      w.u32(a.param);
+      w.f32(a.value);
+      w.u16(expr.length);
+      w.u16(0);
+      w.bytes(expr);
+      break;
+    }
     case 'setLoop':
       w.u8(0x05);
       w.u32(a.section);
@@ -318,11 +427,22 @@ function writeAction(w: Writer, a: CueAction) {
       w.u8(0x06);
       w.u32(a.code);
       break;
-    case 'setRtpc':
-      w.u8(0x07);
-      w.u32(a.rtpc);
-      w.f32(a.value);
+    case 'setRtpc': {
+      const expr = valueExpr(a.valueExpr);
+      if (expr.length === 0) {
+        w.u8(0x07);
+        w.u32(a.rtpc);
+        w.f32(a.value);
+      } else {
+        w.u8(0x0d);
+        w.u32(a.rtpc);
+        w.f32(a.value);
+        w.u16(expr.length);
+        w.u16(0);
+        w.bytes(expr);
+      }
       break;
+    }
     case 'oneShot':
       w.u8(0x08);
       w.u32(a.asset);
@@ -487,7 +607,7 @@ export function encodePack(
         w.bytes(bytecode);
         w.u8(r.actions.length);
         w.u8(r.stopIfMatched ? 1 : 0);
-        for (const a of r.actions) writeAction(w, a);
+        for (const a of r.actions) writeAction(w, a, project);
       }
     }
     w.u32(project.bindings.length);
@@ -586,6 +706,57 @@ export function encodePack(
     w.u32(projMasterEffects.length);
     for (const e of projMasterEffects) w.u32(e);
     chunks.push({ id: 'PINS', body: w.result() });
+  }
+
+  // BLND (vertical blend curves, v3; engine-evaluated)
+  {
+    const blends = project.blends ?? [];
+    const w = new Writer();
+    w.u32(blends.length);
+    for (const b of blends) {
+      w.u32(b.id);
+      w.u32(b.rtpc);
+      w.u32(b.section);
+      w.u32(b.track);
+      w.u16(b.points.length);
+      w.u16(0);
+      for (const p of b.points) {
+        w.f32(p.x);
+        w.f32(p.y);
+      }
+    }
+    chunks.push({ id: 'BLND', body: w.result() });
+  }
+
+  // PMOD (RTPC -> plugin parameter modulation, v3; host-side only)
+  {
+    const mods = project.paramMods ?? [];
+    const w = new Writer();
+    w.u32(mods.length);
+    for (const m of mods) {
+      w.u32(m.instance);
+      w.u32(m.param);
+      w.u32(m.rtpc);
+      w.u16(m.points.length);
+      w.u16(0);
+      for (const p of m.points) {
+        w.f32(p.x);
+        w.f32(p.y);
+      }
+    }
+    chunks.push({ id: 'PMOD', body: w.result() });
+  }
+
+  // NSRC (note-generator routing, v3; host-side only)
+  {
+    const sources = project.noteSources ?? [];
+    const w = new Writer();
+    w.u32(sources.length);
+    for (const s of sources) {
+      w.u32(s.generator);
+      w.u32(s.target);
+    }
+    chunks.push({ id: 'NSRC', body: w.result() });
   }
 
   // META (project JSON for re-import; the engine skips unknown chunks)

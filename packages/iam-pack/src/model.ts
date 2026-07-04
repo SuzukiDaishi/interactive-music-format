@@ -9,10 +9,14 @@
 export const PACK_MAGIC = 'IAMP';
 /**
  * Binary pack version. Bumped 1 -> 2 to add WCLAP plugins, instrument (MIDI)
- * tracks and bridge transitions. v1 modules must be re-exported from their META
- * chunk to load on a v2 engine.
+ * tracks and bridge transitions; 2 -> 3 to add vertical blend curves (BLND),
+ * plugin parameter modulation (PMOD), note-generator routing (NSRC), and the
+ * timed/track-level transition actions. Decoders accept 2 and 3; encoders
+ * always write 3.
  */
-export const PACK_VERSION = 2;
+export const PACK_VERSION = 3;
+/** Oldest pack version the v3 decoders still accept. */
+export const MIN_PACK_VERSION = 2;
 export const NONE_ID = 0xffffffff;
 
 /** Name of the WASM custom section that carries the IAMP pack. */
@@ -123,6 +127,57 @@ export interface Anchor {
   beat: number;
 }
 
+/** A point on a piecewise-linear curve; `x` values must be ascending. */
+export interface CurvePoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * A vertical blend: a continuous RTPC -> track-gain mapping evaluated by the
+ * engine every block (piecewise-linear in the smoothed RTPC value, clamped
+ * outside the point range). Multiplies with track volume, cue gain overrides
+ * and the player fade.
+ */
+export interface BlendCurve {
+  id: number;
+  /** Rtpc.id driving the curve. */
+  rtpc: number;
+  /** Section owning the target track. */
+  section: number;
+  /** Track whose gain is modulated. */
+  track: number;
+  /** At least one point; x ascending. */
+  points: CurvePoint[];
+}
+
+/**
+ * RTPC -> CLAP plugin parameter modulation, applied host-side (the engine
+ * skips the PMOD chunk like WCLP/PINS). Drives generative plugins from game
+ * state.
+ */
+export interface ParamMod {
+  /** PluginInstance.id receiving the parameter changes. */
+  instance: number;
+  /** CLAP parameter id. */
+  param: number;
+  /** Rtpc.id driving the curve. */
+  rtpc: number;
+  /** At least one point; x ascending. y is the raw CLAP parameter value. */
+  points: CurvePoint[];
+}
+
+/**
+ * Routes the CLAP note output of a generator plugin instance into an
+ * instrument plugin instance (host-side; NSRC chunk).
+ */
+export interface NoteSource {
+  /** PluginInstance.id whose note output events are captured. */
+  generator: number;
+  /** PluginInstance.id that receives the generated notes. */
+  target: number;
+}
+
 export interface Section {
   id: number;
   name: string;
@@ -166,10 +221,67 @@ export type CueAction =
     }
   | { type: 'play'; section: number; anchor: number | null }
   | { type: 'stop'; timing: TimingName; fadeMs: number }
-  | { type: 'setTrackGain'; section: number; track: number; gain: number; fadeMs: number }
+  | {
+      type: 'setTrackGain';
+      section: number;
+      track: number;
+      gain: number;
+      fadeMs: number;
+      /**
+       * When to apply the gain change (v3). Omitted/'immediate' keeps the v2
+       * behavior (smoothing starts right away); other values quantize the
+       * change to the next beat/bar or the section end.
+       */
+      timing?: TimingName;
+      /**
+       * Optional value expression (v3, see docs/03_cue_vm_spec.md). When set,
+       * the gain is computed by evaluating this expression at fire time and
+       * `gain` is ignored.
+       */
+      gainExpr?: string;
+    }
+  | {
+      /**
+       * Track-level transition (v3): retarget one track of the playing
+       * section to the content of another section's track, beat-synced to the
+       * current timeline, while the other tracks keep playing.
+       */
+      type: 'gotoTrack';
+      /** Destination section (must be the playing section to take effect). */
+      section: number;
+      /** Track of `section` whose content is replaced. */
+      track: number;
+      /** Source section supplying the content; null clears the override. */
+      sourceSection: number | null;
+      /** Track within `sourceSection` (ignored when clearing). */
+      sourceTrack: number | null;
+      timing: TimingName;
+      transition: TransitionName;
+      fadeMs: number;
+    }
   | { type: 'setLoop'; section: number; enabled: boolean }
   | { type: 'emit'; code: number }
-  | { type: 'setRtpc'; rtpc: number; value: number }
+  | {
+      type: 'setRtpc';
+      rtpc: number;
+      value: number;
+      /** Optional value expression (v3); when set, `value` is ignored. */
+      valueExpr?: string;
+    }
+  | {
+      /**
+       * Set a CLAP plugin parameter (v3). The engine only forwards this as a
+       * PluginParam event; the JS host applies it to the plugin rack.
+       */
+      type: 'setPluginParam';
+      /** PluginInstance.id. */
+      instance: number;
+      /** CLAP parameter id. */
+      param: number;
+      value: number;
+      /** Optional value expression (v3); when set, `value` is ignored. */
+      valueExpr?: string;
+    }
   | { type: 'oneShot'; asset: number; gain: number; timing: TimingName };
 
 export interface CueRule {
@@ -231,6 +343,12 @@ export interface IamProject {
   pluginInstances: PluginInstance[];
   /** Master bus effect chain: ordered plugin instance ids. */
   masterEffects: number[];
+  /** Vertical blend curves (v3, BLND chunk). */
+  blends?: BlendCurve[];
+  /** RTPC -> plugin parameter modulations (v3, PMOD chunk). */
+  paramMods?: ParamMod[];
+  /** Note-generator routings (v3, NSRC chunk). */
+  noteSources?: NoteSource[];
 }
 
 export type AssetFormat = 'pcm16' | 'f32';
@@ -285,6 +403,9 @@ export function normalizeProject(project: IamProject): IamProject {
   project.plugins ??= [];
   project.pluginInstances ??= [];
   project.masterEffects ??= [];
+  project.blends ??= [];
+  project.paramMods ??= [];
+  project.noteSources ??= [];
   for (const s of project.sections) {
     for (const t of s.tracks) {
       t.kind ??= 'audio';
@@ -318,6 +439,10 @@ export const EventType = {
   Looped: 6,
   OneShot: 7,
   RtpcChanged: 8,
+  /** a=instance id, b=CLAP param id, c=value (v3, applied by the JS host). */
+  PluginParam: 9,
+  /** a=dest track id, b=source section id (NONE_ID=cleared), c=source track id (v3). */
+  TrackGoto: 10,
 } as const;
 
 export interface IamEvent {

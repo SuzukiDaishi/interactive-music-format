@@ -6,11 +6,15 @@
 
 import {
   AssetMeta,
+  BlendCurve,
   EncodeAsset,
   IamProject,
+  MIN_PACK_VERSION,
   NONE_ID,
+  NoteSource,
   PACK_MAGIC,
   PACK_VERSION,
+  ParamMod,
   PluginInstance,
 } from './model.js';
 
@@ -69,6 +73,12 @@ export interface DecodedPack {
   pluginInstances: PluginInstance[];
   /** Master effect chain (plugin instance ids) from the PINS chunk. */
   masterEffects: number[];
+  /** Vertical blend curves from the BLND chunk (v3; empty for v2 packs). */
+  blends: BlendCurve[];
+  /** RTPC -> plugin parameter modulations from the PMOD chunk (v3). */
+  paramMods: ParamMod[];
+  /** Note-generator routings from the NSRC chunk (v3). */
+  noteSources: NoteSource[];
 }
 
 class Reader {
@@ -127,6 +137,7 @@ const ACTION_PAYLOAD_SIZE: Record<number, number> = {
   0x06: 4, // emit
   0x07: 8, // setRtpc
   0x08: 12, // oneShot
+  0x0b: 24, // gotoTrack
 };
 
 function skipAction(r: Reader) {
@@ -135,6 +146,28 @@ function skipAction(r: Reader) {
     const count = r.u8();
     // timing+transition+pad (3) + fadeMs (4) + bridge (4) + targets (count*12)
     r.bytes(3 + 4 + 4 + count * 12);
+    return;
+  }
+  if (op === 0x0a) {
+    // section+track (8) + gain+fadeMs (8) + timing+pad (2)
+    r.bytes(16 + 2);
+    r.bytes(r.u16()); // value expr
+    return;
+  }
+  if (op === 0x0c) {
+    // instance+param (8) + value (4)
+    r.bytes(12);
+    const exprLen = r.u16();
+    r.u16(); // pad
+    r.bytes(exprLen);
+    return;
+  }
+  if (op === 0x0d) {
+    // rtpc (4) + value (4)
+    r.bytes(8);
+    const exprLen = r.u16();
+    r.u16(); // pad
+    r.bytes(exprLen);
     return;
   }
   const size = ACTION_PAYLOAD_SIZE[op];
@@ -147,7 +180,9 @@ export function decodePack(pack: Uint8Array): DecodedPack {
   const magic = new TextDecoder().decode(r.bytes(4));
   if (magic !== PACK_MAGIC) throw new Error(`IAMP: bad magic '${magic}'`);
   const version = r.u32();
-  if (version !== PACK_VERSION) throw new Error(`IAMP: unsupported version ${version}`);
+  if (version < MIN_PACK_VERSION || version > PACK_VERSION) {
+    throw new Error(`IAMP: unsupported version ${version}`);
+  }
   const chunkCount = r.u32();
 
   const out: DecodedPack = {
@@ -164,6 +199,9 @@ export function decodePack(pack: Uint8Array): DecodedPack {
     plugins: [],
     pluginInstances: [],
     masterEffects: [],
+    blends: [],
+    paramMods: [],
+    noteSources: [],
   };
 
   for (let i = 0; i < chunkCount; i++) {
@@ -340,6 +378,46 @@ export function decodePack(pack: Uint8Array): DecodedPack {
       }
       const mCount = cr.u32();
       for (let m = 0; m < mCount; m++) out.masterEffects.push(cr.u32());
+    } else if (id === 'BLND') {
+      const count = cr.u32();
+      for (let k = 0; k < count; k++) {
+        const bid = cr.u32();
+        const rtpc = cr.u32();
+        const section = cr.u32();
+        const track = cr.u32();
+        const pointCount = cr.u16();
+        cr.u16();
+        const points: { x: number; y: number }[] = [];
+        for (let p = 0; p < pointCount; p++) {
+          const x = cr.f32();
+          const y = cr.f32();
+          points.push({ x, y });
+        }
+        out.blends.push({ id: bid, rtpc, section, track, points });
+      }
+    } else if (id === 'PMOD') {
+      const count = cr.u32();
+      for (let k = 0; k < count; k++) {
+        const instance = cr.u32();
+        const param = cr.u32();
+        const rtpc = cr.u32();
+        const pointCount = cr.u16();
+        cr.u16();
+        const points: { x: number; y: number }[] = [];
+        for (let p = 0; p < pointCount; p++) {
+          const x = cr.f32();
+          const y = cr.f32();
+          points.push({ x, y });
+        }
+        out.paramMods.push({ instance, param, rtpc, points });
+      }
+    } else if (id === 'NSRC') {
+      const count = cr.u32();
+      for (let k = 0; k < count; k++) {
+        const generator = cr.u32();
+        const target = cr.u32();
+        out.noteSources.push({ generator, target });
+      }
     } else if (id === 'META') {
       try {
         const meta = JSON.parse(new TextDecoder().decode(body));

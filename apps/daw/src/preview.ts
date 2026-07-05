@@ -29,6 +29,8 @@ class PreviewEngine {
   rate = 1;
 
   private ctx: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private meterBuf: Float32Array | null = null;
   private engineBytes: Uint8Array | null = null;
   private version = 0;
   private listeners = new Set<() => void>();
@@ -83,9 +85,15 @@ class PreviewEngine {
       const bytes = await this.buildModule('f32');
       if (!this.ctx) this.ctx = new AudioContext();
       if (this.ctx.state === 'suspended') await this.ctx.resume();
+      if (!this.analyser) {
+        this.analyser = this.ctx.createAnalyser();
+        this.analyser.fftSize = 1024;
+        this.analyser.connect(this.ctx.destination);
+        this.meterBuf = new Float32Array(this.analyser.fftSize);
+      }
       this.disposePlayer();
       const player = await IamPlayer.load(bytes, this.ctx);
-      player.node.connect(this.ctx.destination);
+      player.node.connect(this.analyser);
       player.onStatus((s) => {
         this.status = s;
         this.emit();
@@ -176,6 +184,18 @@ class PreviewEngine {
     this.emit();
   }
 
+  /** Instantaneous output peak (0..1+) of the running preview, for meters. */
+  peakLevel(): number {
+    if (!this.analyser || !this.meterBuf) return 0;
+    this.analyser.getFloatTimeDomainData(this.meterBuf as Float32Array<ArrayBuffer>);
+    let p = 0;
+    for (let i = 0; i < this.meterBuf.length; i++) {
+      const v = Math.abs(this.meterBuf[i]);
+      if (v > p) p = v;
+    }
+    return p;
+  }
+
   private disposePlayer() {
     if (this.player) {
       this.player.stop(0);
@@ -209,6 +229,8 @@ function describeEvent(e: NamedEvent): string {
 }
 
 export const preview = new PreviewEngine();
+// Handy for debugging and end-to-end tests (headless audio assertions).
+(globalThis as unknown as { __iamPreview?: PreviewEngine }).__iamPreview = preview;
 
 export function usePreview(): PreviewEngine {
   useSyncExternalStore(preview.subscribe, preview.getVersion);

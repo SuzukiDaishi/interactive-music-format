@@ -11,6 +11,8 @@ import {
   Section,
   Track,
   emptyProject,
+  migrateCuesToGraphs,
+  normalizeProject,
 } from '@iam/pack';
 
 export interface AssetAudio {
@@ -38,6 +40,8 @@ class DawStore {
   selectedCueId: number | null = null;
   selectedAssetId: number | null = null;
   selection: Selection = { kind: 'none' };
+  /** Center column view: arrangement, node routing, or logic graphs. */
+  centerView: 'arrange' | 'routing' | 'logic' = 'arrange';
   /** Increments on every mutation. */
   version = 0;
   /** True when edits were made since the last preview build. */
@@ -157,14 +161,33 @@ class DawStore {
     bundles?: Map<number, Uint8Array>,
   ): void {
     this.update((s) => {
-      s.project = project;
+      // The editor is node-based: legacy cue/binding lists become graphs.
+      s.project = migrateCuesToGraphs(normalizeProject(project));
       s.assets = new Map(assets.map((a) => [a.id, a]));
       s.pluginBundles = bundles ?? new Map();
       s.selectedSectionId = project.sections[0]?.id ?? null;
-      s.selectedCueId = project.cues[0]?.id ?? null;
+      s.selectedCueId = null;
       s.selectedAssetId = assets[0]?.id ?? null;
       s.selection = { kind: 'none' };
     });
+  }
+
+  /** Removes plugin instances and scrubs every reference to them. */
+  removeInstances(ids: number[]): void {
+    if (ids.length === 0) return;
+    const dead = new Set(ids);
+    this.project.pluginInstances = this.project.pluginInstances.filter((i) => !dead.has(i.id));
+    this.project.masterEffects = this.project.masterEffects.filter((id) => !dead.has(id));
+    this.project.noteSources = (this.project.noteSources ?? []).filter(
+      (s) => !dead.has(s.generator) && !dead.has(s.target),
+    );
+    this.project.paramMods = (this.project.paramMods ?? []).filter((m) => !dead.has(m.instance));
+    for (const sec of this.project.sections) {
+      for (const t of sec.tracks) {
+        if (t.instrument != null && dead.has(t.instrument)) t.instrument = null;
+        if (t.effects) t.effects = t.effects.filter((id) => !dead.has(id));
+      }
+    }
   }
 }
 

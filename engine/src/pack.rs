@@ -1,10 +1,13 @@
-//! IAMP (Interactive Audio Module Pack) v1 binary parser.
+//! IAMP (Interactive Audio Module Pack) binary parser.
 //!
 //! See docs/02_iam_pack_spec.md for the normative layout.
 //! All multi-byte values are little-endian.
 
 pub const MAGIC: [u8; 4] = *b"IAMP";
-pub const VERSION: u32 = 2;
+/// Current pack version written by encoders.
+pub const VERSION: u32 = 3;
+/// Oldest pack version this engine still loads.
+pub const MIN_VERSION: u32 = 2;
 pub const NONE_ID: u32 = 0xFFFF_FFFF;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +38,19 @@ pub struct Pack {
     pub cues: Vec<Cue>,
     pub bindings: Vec<Binding>,
     pub assets: Vec<Asset>,
+    pub blends: Vec<Blend>,
+}
+
+/// A vertical blend curve: a continuous RTPC -> track-gain mapping,
+/// piecewise-linear in the smoothed RTPC value, clamped outside the points.
+#[allow(dead_code)]
+pub struct Blend {
+    pub id: u32,
+    pub rtpc: u32,
+    pub section: u32,
+    pub track: u32,
+    /// (x = rtpc value, y = linear gain); x ascending, at least one point.
+    pub points: Vec<(f32, f32)>,
 }
 
 // Some fields (names, ids) are part of the format and kept for
@@ -180,6 +196,41 @@ pub enum Action {
         gain: f32,
         fade_ms: f32,
     },
+    /// v3: gain change quantized to a musical boundary, with an optional
+    /// value expression evaluated at fire time (overrides `gain`).
+    SetTrackGainTimed {
+        section: u32,
+        track: u32,
+        gain: f32,
+        fade_ms: f32,
+        timing: Timing,
+        expr: Vec<u8>,
+    },
+    /// v3: retarget one track of the playing section to another section's
+    /// track content (beat-synced), or clear the override (src_section=NONE).
+    GotoTrack {
+        section: u32,
+        track: u32,
+        src_section: u32,
+        src_track: u32,
+        timing: Timing,
+        crossfade: bool,
+        fade_ms: f32,
+    },
+    /// v3: forwarded to the JS host as a PluginParam event; the engine's
+    /// audio path is unaffected.
+    SetPluginParam {
+        instance: u32,
+        param: u32,
+        value: f32,
+        expr: Vec<u8>,
+    },
+    /// v3: setRtpc with a value expression evaluated at fire time.
+    SetRtpcDyn {
+        rtpc: u32,
+        value: f32,
+        expr: Vec<u8>,
+    },
     SetLoop {
         section: u32,
         enabled: bool,
@@ -300,7 +351,8 @@ pub fn parse(buf: &[u8]) -> Result<Pack> {
     if r.bytes(4)? != MAGIC {
         return Err(PackError::BadMagic);
     }
-    if r.u32()? != VERSION {
+    let version = r.u32()?;
+    if !(MIN_VERSION..=VERSION).contains(&version) {
         return Err(PackError::BadVersion);
     }
     let chunk_count = checked_count(r.u32()?)?;
@@ -317,6 +369,7 @@ pub fn parse(buf: &[u8]) -> Result<Pack> {
         cues: Vec::new(),
         bindings: Vec::new(),
         assets: Vec::new(),
+        blends: Vec::new(),
     };
     let mut have_proj = false;
 
@@ -338,7 +391,9 @@ pub fn parse(buf: &[u8]) -> Result<Pack> {
             b"SECT" => parse_sect(&mut cr, &mut pack)?,
             b"CUES" => parse_cues(&mut cr, &mut pack)?,
             b"ABNK" => parse_abnk(&mut cr, &mut pack)?,
-            // Unknown chunks (e.g. "META") are skipped for forward compat.
+            b"BLND" => parse_blnd(&mut cr, &mut pack)?,
+            // Unknown chunks (e.g. "META", host-only "WCLP"/"PINS"/"PMOD"/
+            // "NSRC") are skipped for forward compat.
             _ => {}
         }
     }
@@ -556,6 +611,65 @@ fn parse_action(r: &mut Reader) -> Result<Action> {
                 timing,
             }
         }
+        0x0A => {
+            let section = r.u32()?;
+            let track = r.u32()?;
+            let gain = r.f32()?;
+            let fade_ms = r.f32()?;
+            let timing = Timing::from_u8(r.u8()?)?;
+            r.u8()?; // pad
+            let expr_len = r.u16()? as usize;
+            let expr = r.bytes(expr_len)?.to_vec();
+            Action::SetTrackGainTimed {
+                section,
+                track,
+                gain,
+                fade_ms,
+                timing,
+                expr,
+            }
+        }
+        0x0B => {
+            let section = r.u32()?;
+            let track = r.u32()?;
+            let src_section = r.u32()?;
+            let src_track = r.u32()?;
+            let timing = Timing::from_u8(r.u8()?)?;
+            let crossfade = r.u8()? != 0;
+            r.u16()?; // pad
+            let fade_ms = r.f32()?;
+            Action::GotoTrack {
+                section,
+                track,
+                src_section,
+                src_track,
+                timing,
+                crossfade,
+                fade_ms,
+            }
+        }
+        0x0C => {
+            let instance = r.u32()?;
+            let param = r.u32()?;
+            let value = r.f32()?;
+            let expr_len = r.u16()? as usize;
+            r.u16()?; // pad
+            let expr = r.bytes(expr_len)?.to_vec();
+            Action::SetPluginParam {
+                instance,
+                param,
+                value,
+                expr,
+            }
+        }
+        0x0D => {
+            let rtpc = r.u32()?;
+            let value = r.f32()?;
+            let expr_len = r.u16()? as usize;
+            r.u16()?; // pad
+            let expr = r.bytes(expr_len)?.to_vec();
+            Action::SetRtpcDyn { rtpc, value, expr }
+        }
         0x09 => {
             let count = r.u8()? as usize;
             let timing = Timing::from_u8(r.u8()?)?;
@@ -677,6 +791,35 @@ fn parse_abnk(r: &mut Reader, pack: &mut Pack) -> Result<()> {
     Ok(())
 }
 
+fn parse_blnd(r: &mut Reader, pack: &mut Pack) -> Result<()> {
+    let count = checked_count(r.u32()?)?;
+    for _ in 0..count {
+        let id = r.u32()?;
+        let rtpc = r.u32()?;
+        let section = r.u32()?;
+        let track = r.u32()?;
+        let point_count = checked_count(r.u16()? as u32)?;
+        r.u16()?; // pad
+        if point_count == 0 {
+            return Err(PackError::Corrupt);
+        }
+        let mut points = Vec::with_capacity(point_count);
+        for _ in 0..point_count {
+            let x = r.f32()?;
+            let y = r.f32()?;
+            points.push((x, y));
+        }
+        pack.blends.push(Blend {
+            id,
+            rtpc,
+            section,
+            track,
+            points,
+        });
+    }
+    Ok(())
+}
+
 fn validate(pack: &Pack) -> Result<()> {
     let section_ok = |id: u32| id == NONE_ID || pack.sections.iter().any(|s| s.id == id);
     let asset_ok = |id: u32| pack.assets.iter().any(|a| a.id == id);
@@ -691,6 +834,17 @@ fn validate(pack: &Pack) -> Result<()> {
                     return Err(PackError::BadReference);
                 }
             }
+        }
+    }
+    for b in &pack.blends {
+        let Some(sec) = pack.sections.iter().find(|s| s.id == b.section) else {
+            return Err(PackError::BadReference);
+        };
+        if !sec.tracks.iter().any(|t| t.id == b.track) {
+            return Err(PackError::BadReference);
+        }
+        if !pack.rtpcs.iter().any(|r| r.id == b.rtpc) {
+            return Err(PackError::BadReference);
         }
     }
     for b in &pack.bindings {

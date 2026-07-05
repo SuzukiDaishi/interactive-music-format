@@ -11,22 +11,29 @@
  * into instrument synths and master effects here. AudioWorklet has no module
  * imports, so the small CLAP host below is inlined. Any plugin failure disables
  * the rack and falls back to engine PCM rather than breaking playback.
+ *
+ * KEEP IN SYNC: makeInstance/mixRack below mirror wclap/host.ts (WclapInstance)
+ * and wclap/rack.ts (WclapRack) feature-for-feature — note & param input
+ * events, CLAP transport, output-note capture (generators), note-source
+ * routing, RTPC param modulation, insert/master chains. Change both together.
  */
 
 export const IAM_PROCESSOR_NAME = 'iam-player-processor';
 
 export const IAM_WORKLET_SOURCE = `
 // --- inline WCLAP/CLAP host -------------------------------------------------
+// NOTE: AudioWorkletGlobalScope has no TextEncoder/TextDecoder (Encoding API),
+// so strings are UTF-8 encoded by hand here.
+function utf8(s){const o=[];for(let i=0;i<s.length;i++){const c=s.codePointAt(i);if(c>0xffff)i++;if(c<0x80)o.push(c);else if(c<0x800)o.push(0xc0|(c>>6),0x80|(c&63));else if(c<0x10000)o.push(0xe0|(c>>12),0x80|((c>>6)&63),0x80|(c&63));else o.push(0xf0|(c>>18),0x80|((c>>12)&63),0x80|((c>>6)&63),0x80|(c&63));}return o;}
 function uleb(n){const o=[];do{let b=n&0x7f;n>>>=7;if(n)b|=0x80;o.push(b);}while(n);return o;}
 function buildTrampoline(){
   const types=[[[0x7f,0x7f],[0x7f]],[[0x7f],[]],[[0x7f],[0x7f]]];
   const fns=[['get_extension',0],['req_restart',1],['req_process',1],['req_callback',1],['inev_size',2],['inev_get',0],['outev_push',0]];
-  const enc=new TextEncoder();
   const sec=(id,p)=>[id,...uleb(p.length),...p];
   let t=[...uleb(types.length)];for(const[p,r]of types){t.push(0x60,...uleb(p.length),...p,...uleb(r.length),...r);}
-  let im=[...uleb(fns.length)];for(const[n,ti]of fns){const m=enc.encode('h'),nm=enc.encode(n);im.push(...uleb(m.length),...m,...uleb(nm.length),...nm,0,...uleb(ti));}
+  let im=[...uleb(fns.length)];for(const[n,ti]of fns){const m=utf8('h'),nm=utf8(n);im.push(...uleb(m.length),...m,...uleb(nm.length),...nm,0,...uleb(ti));}
   let fn=[...uleb(fns.length)];for(const[,ti]of fns)fn.push(...uleb(ti));
-  let ex=[...uleb(fns.length)];for(let i=0;i<fns.length;i++){const nm=enc.encode('t_'+fns[i][0]);ex.push(...uleb(nm.length),...nm,0,...uleb(fns.length+i));}
+  let ex=[...uleb(fns.length)];for(let i=0;i<fns.length;i++){const nm=utf8('t_'+fns[i][0]);ex.push(...uleb(nm.length),...nm,0,...uleb(fns.length+i));}
   let cd=[...uleb(fns.length)];for(let i=0;i<fns.length;i++){const np=types[fns[i][1]][0].length;let b=[0];for(let p=0;p<np;p++)b.push(0x20,...uleb(p));b.push(0x10,...uleb(i),0x0b);cd.push(...uleb(b.length),...b);}
   return new WebAssembly.Module(new Uint8Array([0,0x61,0x73,0x6d,1,0,0,0,...sec(1,t),...sec(2,im),...sec(3,fn),...sec(7,ex),...sec(10,cd)]));
 }
@@ -36,9 +43,23 @@ function makeInstance(module, opts){
   const mem=ex.memory, table=ex.__indirect_function_table;
   const dv=()=>new DataView(mem.buffer);
   const malloc=(n)=>ex.malloc(n);
-  const cstr=(s)=>{const b=new TextEncoder().encode(s);const p=malloc(b.length+1);new Uint8Array(mem.buffer,p,b.length+1).set([...b,0]);return p;};
-  let inEventPtrs=[]; let events=[]; const activeNotes=new Set();
-  const imports={h:{get_extension:()=>0,req_restart:()=>{},req_process:()=>{},req_callback:()=>{},inev_size:()=>inEventPtrs.length,inev_get:(c,i)=>inEventPtrs[i]||0,outev_push:()=>1}};
+  const cstr=(s)=>{const b=utf8(s);const p=malloc(b.length+1);new Uint8Array(mem.buffer,p,b.length+1).set([...b,0]);return p;};
+  let inEventPtrs=[]; let events=[]; const activeNotes=new Set(); let outNotes=[];
+  // outev_push copies note events out of plugin memory immediately (the
+  // pointer is only valid inside the callback); other events are dropped.
+  const imports={h:{get_extension:()=>0,req_restart:()=>{},req_process:()=>{},req_callback:()=>{},inev_size:()=>inEventPtrs.length,inev_get:(c,i)=>inEventPtrs[i]||0,outev_push:(c,evPtr)=>{
+    try{
+      const d=dv();
+      if(evPtr<=0||evPtr+12>d.byteLength)return 0;
+      const size=d.getUint32(evPtr,true);
+      if(size<12||size>64||evPtr+size>d.byteLength)return 0;
+      const space=d.getUint16(evPtr+8,true),type=d.getUint16(evPtr+10,true);
+      if(space===0&&(type===0||type===1)&&size>=40&&outNotes.length<256){
+        outNotes.push({time:d.getUint32(evPtr+4,true),isOn:type===0,key:d.getInt16(evPtr+24,true),channel:Math.max(0,d.getInt16(evPtr+22,true)),velocity:d.getFloat64(evPtr+32,true)});
+      }
+      return 1;
+    }catch(e){return 0;}
+  }}};
   const tramp=new WebAssembly.Instance(opts.trampoline,imports).exports;
   const order=['get_extension','req_restart','req_process','req_callback','inev_size','inev_get','outev_push'];
   const base=table.length; table.grow(order.length); const idx={};
@@ -64,7 +85,12 @@ function makeInstance(module, opts){
   const inEv=malloc(12);dv().setUint32(inEv+4,idx.inev_size,true);dv().setUint32(inEv+8,idx.inev_get,true);
   const outEv=malloc(8);dv().setUint32(outEv+4,idx.outev_push,true);
   const POOL=512,STRIDE=48,evPool=malloc(POOL*STRIDE);
+  // clap_event_transport (104 bytes), pointed to by clap_process.transport.
+  const transportPtr=malloc(112);
+  new Uint8Array(mem.buffer,transportPtr,104).fill(0);
+  dv().setUint32(transportPtr,104,true);dv().setUint16(transportPtr+10,9,true);
   const proc=malloc(64);
+  dv().setUint32(proc+12,transportPtr,true);
   dv().setUint32(proc+16,opts.audioInputs?aIn:0,true);dv().setUint32(proc+20,aOut,true);
   dv().setUint32(proc+24,opts.audioInputs,true);dv().setUint32(proc+28,1,true);
   dv().setUint32(proc+32,inEv,true);dv().setUint32(proc+36,outEv,true);
@@ -73,12 +99,25 @@ function makeInstance(module, opts){
   function note(clapType,key,ch,vel,time){const e=new Uint8Array(40);const v=new DataView(e.buffer);v.setUint32(0,40,true);v.setUint32(4,time,true);v.setUint16(10,clapType,true);v.setInt32(16,-1,true);v.setInt16(22,ch,true);v.setInt16(24,key,true);v.setFloat64(32,vel,true);events.push({time,bytes:e});}
   function setParam(id,value,time){const e=new Uint8Array(48);const v=new DataView(e.buffer);v.setUint32(0,48,true);v.setUint32(4,time,true);v.setUint16(10,5,true);v.setUint32(16,id>>>0,true);v.setInt32(24,-1,true);v.setInt16(28,-1,true);v.setInt16(30,-1,true);v.setInt16(32,-1,true);v.setFloat64(40,value,true);events.push({time,bytes:e});}
   for(const p of (opts.params||[]))setParam(p.id,p.value,0);
+  function setTransport(bpm,posBeats,beatsPerBar,playing){
+    const d=dv(),p=transportPtr,bf=0x80000000;
+    const bpb=beatsPerBar>0?beatsPerBar:4;
+    d.setUint32(p+16,(1|2|8|(playing?16:0)),true);
+    d.setBigInt64(p+24,BigInt(Math.round(posBeats*bf)),true);
+    d.setFloat64(p+40,bpm,true);
+    const barStart=Math.floor(posBeats/bpb)*bpb;
+    d.setBigInt64(p+88,BigInt(Math.round(barStart*bf)),true);
+    d.setInt32(p+96,Math.floor(posBeats/bpb),true);
+    d.setUint16(p+100,Math.round(bpb),true);d.setUint16(p+102,4,true);
+  }
   return {
     audioInputs:opts.audioInputs,
     noteOn:(k,ch,vel,t)=>{note(0,k,ch,vel,t);activeNotes.add(k|(ch<<8));},
     noteOff:(k,ch,t)=>{note(1,k,ch,0,t);activeNotes.delete(k|(ch<<8));},
     allNotesOff:(t)=>{for(const k of[...activeNotes]){note(1,k&0xff,(k>>8)&0xff,0,t);activeNotes.delete(k);}},
     setParam,
+    setTransport,
+    takeOutputNotes:()=>{if(outNotes.length===0)return outNotes;const o=outNotes;outNotes=[];return o;},
     process:(frames,iL,iR)=>{
       events.sort((a,b)=>a.time-b.time); inEventPtrs=[];
       const c=Math.min(events.length,POOL);
@@ -118,10 +157,21 @@ class IamProcessor extends AudioWorkletProcessor {
       this.eventPtr = ex.iam_alloc(16);
       this.midiPtr = ex.iam_alloc(16);
       this.ex = ex;
+      let rackError = null;
       if (plugins && plugins.length && ex.iam_poll_midi) {
-        try { this.buildRack(plugins, routing); } catch (e) { this.rack = null; }
+        try { this.buildRack(plugins, routing); } catch (e) {
+          this.rack = null;
+          rackError = String(e && (e.stack || e.message) || e);
+        }
+      } else if (plugins && plugins.length) {
+        rackError = 'engine lacks iam_poll_midi';
       }
-      this.port.postMessage({ type: 'ready' });
+      this.port.postMessage({
+        type: 'ready',
+        rackSize: this.rack ? this.rack.map.size : 0,
+        pluginCount: plugins ? plugins.length : 0,
+        rackError,
+      });
     } catch (err) {
       this.port.postMessage({ type: 'error', message: String(err && err.message || err) });
     }
@@ -137,7 +187,7 @@ class IamProcessor extends AudioWorkletProcessor {
       });
       map.set(p.instanceId, inst);
     }
-    this.rack = { map, routing: routing || { instruments: [], masterEffects: [] } };
+    this.rack = { map, routing: routing || { instruments: [], masterEffects: [] }, modValues: new Map() };
   }
 
   drainMidi() {
@@ -165,12 +215,31 @@ class IamProcessor extends AudioWorkletProcessor {
     return { l: cl, r: cr };
   }
 
+  curveValue(points, x) {
+    if (!points || points.length === 0) return 1;
+    if (x <= points[0].x) return points[0].y;
+    for (let i = 1; i < points.length; i++) {
+      if (x <= points[i].x) {
+        const a = points[i - 1], b = points[i];
+        if (b.x - a.x <= 1e-12) return b.y;
+        return a.y + (b.y - a.y) * ((x - a.x) / (b.x - a.x));
+      }
+    }
+    return points[points.length - 1].y;
+  }
+
   mixRack(frames) {
-    const L = this.bufL, R = this.bufR, rk = this.rack;
-    // dispatch MIDI
+    const L = this.bufL, R = this.bufR, rk = this.rack, ex = this.ex;
+    // dispatch MIDI. status: 0=off, 1=on, 2=all-notes-off (instanceId
+    // 0xffffffff broadcasts to every instance, else only that instance).
     for (const e of this.drainMidi()) {
-      if (e.status === 0 && e.instanceId === 0xffffffff) {
-        for (const inst of rk.map.values()) inst.allNotesOff(e.frameOffset);
+      if (e.status === 2 || (e.status === 0 && e.instanceId === 0xffffffff)) {
+        if (e.instanceId === 0xffffffff) {
+          for (const inst of rk.map.values()) inst.allNotesOff(e.frameOffset);
+        } else {
+          const inst = rk.map.get(e.instanceId);
+          if (inst) inst.allNotesOff(e.frameOffset);
+        }
         continue;
       }
       const inst = rk.map.get(e.instanceId);
@@ -178,7 +247,35 @@ class IamProcessor extends AudioWorkletProcessor {
       if (e.status === 1) inst.noteOn(e.key, 0, e.velocity, e.frameOffset);
       else if (e.status === 0) inst.noteOff(e.key, 0, e.frameOffset);
     }
+    // Musical clock for every plugin (generators need it to stay on the grid).
+    const bpm = ex.iam_get_bpm ? ex.iam_get_bpm() : 120;
+    const beats = ex.iam_get_position_beats();
+    const bpb = ex.iam_get_beats_per_bar ? ex.iam_get_beats_per_bar() : 4;
+    const playing = ex.iam_is_playing() !== 0;
+    for (const inst of rk.map.values()) inst.setTransport(bpm, beats, bpb, playing);
+    // RTPC -> plugin parameter modulation (only pushed on change).
+    for (const m of rk.routing.paramMods || []) {
+      const inst = rk.map.get(m.instance);
+      if (!inst) continue;
+      const v = this.curveValue(m.points, ex.iam_get_rtpc(m.rtpc >>> 0));
+      const k = m.instance + ':' + m.param;
+      if (rk.modValues.get(k) !== v) { rk.modValues.set(k, v); inst.setParam(m.param, v, 0); }
+    }
+    // Note generators: audio discarded, captured note output routed into the
+    // target instrument within the same block.
+    const generatorIds = new Set();
+    for (const ns of rk.routing.noteSources || []) {
+      generatorIds.add(ns.generator);
+      const gen = rk.map.get(ns.generator), target = rk.map.get(ns.target);
+      if (!gen || !target) continue;
+      gen.process(frames);
+      for (const n of gen.takeOutputNotes()) {
+        if (n.isOn) target.noteOn(n.key, n.channel, n.velocity, n.time);
+        else target.noteOff(n.key, n.channel, n.time);
+      }
+    }
     for (const ins of rk.routing.instruments) {
+      if (generatorIds.has(ins.instanceId)) continue;
       const inst = rk.map.get(ins.instanceId);
       if (!inst) continue;
       // The synth is rendered here, so apply the instrument track's live
@@ -236,6 +333,7 @@ class IamProcessor extends AudioWorkletProcessor {
         for (let i = 0; i < frames; i++) { l[i] = L[i]; if (out.length > 1) r[i] = R[i]; }
       } catch (e) {
         this.rack = null; // disable rack on error, fall back to PCM
+        console.warn('[iam-worklet] rack processing failed; instruments disabled:', e && e.message || e);
         for (let i = 0; i < frames; i++) { l[i] = buf[i * 2]; if (out.length > 1) r[i] = buf[i * 2 + 1]; }
       }
     } else {
@@ -250,12 +348,19 @@ class IamProcessor extends AudioWorkletProcessor {
     while (ex.iam_poll_event(this.eventPtr) !== 0) {
       const v = view();
       if (!events) events = [];
-      events.push({
+      const ev = {
         type: v.getUint32(0, true),
         a: v.getUint32(4, true),
         b: v.getUint32(8, true),
         c: v.getFloat32(12, true),
-      });
+      };
+      // PluginParam (9): a cue set a plugin parameter; apply it to the rack
+      // (takes effect on the next block).
+      if (ev.type === 9 && this.rack) {
+        const inst = this.rack.map.get(ev.a);
+        if (inst) { try { inst.setParam(ev.b, ev.c, 0); } catch (e) { /* rack fallback elsewhere */ } }
+      }
+      events.push(ev);
     }
     this.tick++;
     if (events || this.tick % 8 === 0) {

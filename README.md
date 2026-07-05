@@ -17,6 +17,11 @@ WASM が動く場所（ブラウザ / Node.js / ゲームエンジン / 組み�
 - ⏩ **ホストからの無茶**: 再生速度変更・逆再生・フリーズ・シークも仕様として定義済み
 - 🎹 **MIDI トラック + WCLAP プラグイン** (v2): [WebCLAP](https://wclap.plinken.org/) のシンセ/エフェクト（wasm32 CLAP）を内包し、instrument トラックを実時間合成（JS/AudioWorklet ホスト）
 - 🪄 **横遷移ブリッジ** (v2): セクション間をブリッジ（フィル/スティンガー）で音楽的に繋ぐ `goto bridge`
+- 🎚 **縦の遷移** (v3): RTPC→トラックゲインの**ブレンド曲線**をエンジンが連続評価。小節頭に量子化したレイヤー切替も
+- 🎛 **トラック単位の遷移** (v3): `gotoTrack` — 再生中の 1 トラックだけを別セクション（= マージした別プロジェクト）の内容へ拍同期で差し替え
+- 🕸 **ノードベーススクリプティング** (v3): DAW のビジュアルグラフ（トリガ→ロジック→アクション）が既存の安全な Cue VM バイトコードへコンパイルされる
+- 🎲 **生成系 WebCLAP** (v3): ノートジェネレータプラグインの CLAP 出力を内蔵音源へルーティング。CLAP トランスポート供給 + RTPC→パラメータ変調でゲーム状態が生成を駆動
+- 📥 **.mid インポート / プロジェクトマージ** (v3): SMF を instrument トラックへ、他プロジェクトの素材・セクション・ロジックを ID 再割当てで取り込み
 
 このリポジトリには **仕様・再生エンジン・Web DAW・プレイヤーライブラリ・デモ**のすべてが含まれます。
 
@@ -28,8 +33,18 @@ npm run dev        # Web DAW (IAM Studio) を起動 → http://localhost:5173
 ```
 
 DAW は初回起動時に合成音のデモプロジェクト（Adventure Demo）を読み込みます。
-**▶ Build & Play** で試聴し、右の RTPC スライダ（intensity / is_battle / weather）を動かすと
-音楽がリアルタイムに遷移します。**Export .iam.wasm** で単一ファイルに書き出せます。
+エディタは 3 つのノードベースビューで構成されます:
+
+- **Arrange** — セクション / トラック / クリップのタイムライン
+- **Routing** — RTPC・ブレンド曲線・WebCLAP プラグイン・パラメータ変調・
+  MIDI ルーティングを 1 枚のパッチキャンバスでケーブル配線
+- **Logic** — トリガ → 条件 → アクションのスクリプトグラフ
+  （読み込んだ既存 Cue は自動でグラフへ移行されます）
+
+**▶ Build & Play** で試聴し、右の **Live Control**（RTPC スライダ / 手動 Cue ボタン /
+出力メーター）でゲーム側を模擬操作: intensity で縦ブレンドが連続フェードし、
+**⚡swap_drums / ⚡restore_drums** でドラムだけのトラック遷移が試せます。
+**Export .iam.wasm** で単一ファイルに書き出せます。
 
 ```bash
 npm test           # エンジン+フォーマットのエンドツーエンドテスト (Node)
@@ -85,7 +100,8 @@ music.setRate(-1);               // 逆再生だってできる
 | [docs/03_cue_vm_spec.md](./docs/03_cue_vm_spec.md) | Cue VM / 条件式言語 |
 | [docs/04_host_api_spec.md](./docs/04_host_api_spec.md) | WASM ABI / JS プレイヤー API |
 | [docs/05_runtime_behavior.md](./docs/05_runtime_behavior.md) | 再生セマンティクス（遷移・逆再生・上限） |
-| [docs/06_wclap_midi_bridges.md](./docs/06_wclap_midi_bridges.md) | WCLAP プラグイン・MIDI トラック・横遷移ブリッジ (v2) |
+| [docs/06_wclap_midi_bridges.md](./docs/06_wclap_midi_bridges.md) | WCLAP プラグイン・MIDI トラック・横遷移ブリッジ (v2) / 生成系ホスティング (v3) |
+| [docs/07_script_graph.md](./docs/07_script_graph.md) | スクリプトグラフ（ノードベーススクリプティング, v3） |
 
 ## 開発
 

@@ -232,9 +232,9 @@ const A = {
 
 const S = { EXPLORE: 0, BATTLE_LOW: 1, BATTLE_HIGH: 2, OUTRO: 3 };
 const R = { INTENSITY: 0, IS_BATTLE: 1, WEATHER: 2 };
-// WCLAP plugin bank ids and instance ids (synth = instrument, limiter = master fx).
-const P = { SYNTH: 0, LIMITER: 1 };
-const I = { SYNTH: 0, LIMITER: 1 };
+// WCLAP plugin bank ids and instance ids (synth/piano = instruments, limiter = master fx).
+const P = { SYNTH: 0, LIMITER: 1, PIANO: 2 };
+const I = { SYNTH: 0, LIMITER: 1, PIANO: 2 };
 const C = {
   ON_BATTLE: 0,
   ON_INTENSITY: 1,
@@ -296,6 +296,15 @@ const synthLeadNotes = [
   { startBeat: 6, lengthBeats: 2, key: 67, velocity: 0.8, channel: 0 },
 ];
 
+// A sparse A-minor piano figure for the VCSL sampler (Explore, always on).
+const pianoNotes = [
+  { startBeat: 0, lengthBeats: 2, key: 57, velocity: 0.6, channel: 0 },
+  { startBeat: 2, lengthBeats: 2, key: 64, velocity: 0.5, channel: 0 },
+  { startBeat: 4, lengthBeats: 2, key: 60, velocity: 0.55, channel: 0 },
+  { startBeat: 6, lengthBeats: 1, key: 67, velocity: 0.5, channel: 0 },
+  { startBeat: 7, lengthBeats: 1, key: 64, velocity: 0.45, channel: 0 },
+];
+
 export function makeDemoAssets() {
   const make = (id, name, data) => ({
     id,
@@ -326,16 +335,95 @@ export function makeDemoProject() {
     bpm: BPM,
     timeSignature: [4, 4],
     startSectionId: S.EXPLORE,
-    // WebCLAP: an embedded synth (instrument) + limiter (master bus effect).
+    // WebCLAP: embedded synth + VCSL piano (instruments) + limiter (master fx).
     plugins: [
       { id: P.SYNTH, name: 'Z Audio Simple Synth', clapPluginId: 'dev.zaudio.simple-synth', embedded: true },
       { id: P.LIMITER, name: 'Z Audio Limiter', clapPluginId: 'dev.zaudio.limiter', embedded: true },
+      { id: P.PIANO, name: 'Z Audio VCSL Piano', clapPluginId: 'dev.zaudio.vcsl-piano', embedded: true },
     ],
     pluginInstances: [
       { id: I.SYNTH, pluginBankId: P.SYNTH, params: [] },
       { id: I.LIMITER, pluginBankId: P.LIMITER, params: [] },
+      { id: I.PIANO, pluginBankId: P.PIANO, params: [] },
     ],
     masterEffects: [I.LIMITER],
+    // 縦の遷移 (vertical blend): `intensity` fades the Explore synth lead in
+    // continuously — no cue scripting needed, the engine evaluates the curve.
+    blends: [
+      {
+        id: 0,
+        rtpc: R.INTENSITY,
+        section: S.EXPLORE,
+        track: 2,
+        points: [
+          { x: 0, y: 0 },
+          { x: 0.45, y: 0 },
+          { x: 0.75, y: 1 },
+          { x: 1, y: 1.1 },
+        ],
+      },
+    ],
+    // Generative control: `intensity` also deepens the synth's vibrato
+    // (Simple Synth CLAP param 33 = LFO depth in semitones).
+    paramMods: [
+      {
+        instance: I.SYNTH,
+        param: 33,
+        rtpc: R.INTENSITY,
+        points: [
+          { x: 0, y: 0 },
+          { x: 1, y: 5 },
+        ],
+      },
+    ],
+    noteSources: [],
+    // パート単位の遷移 (track transition), authored as a script graph: manual
+    // cues swap only the Drums slot of Battle_Low to Battle_High's drums (and
+    // back) on the next bar while bass keeps playing.
+    graphs: [
+      {
+        id: 0,
+        name: 'drum swap',
+        nodes: [
+          { id: 'swap', kind: 'onManualCue', x: 40, y: 40, data: { name: 'swap_drums' } },
+          {
+            id: 'do_swap',
+            kind: 'gotoTrack',
+            x: 260,
+            y: 40,
+            data: {
+              section: S.BATTLE_LOW,
+              track: 0,
+              sourceSection: S.BATTLE_HIGH,
+              sourceTrack: 0,
+              timing: 'nextBar',
+              transition: 'crossfade',
+              fadeMs: 120,
+            },
+          },
+          { id: 'restore', kind: 'onManualCue', x: 40, y: 190, data: { name: 'restore_drums' } },
+          {
+            id: 'do_restore',
+            kind: 'gotoTrack',
+            x: 260,
+            y: 190,
+            data: {
+              section: S.BATTLE_LOW,
+              track: 0,
+              sourceSection: null,
+              sourceTrack: null,
+              timing: 'nextBar',
+              transition: 'crossfade',
+              fadeMs: 120,
+            },
+          },
+        ],
+        edges: [
+          { from: 'swap', fromPort: 'out', to: 'do_swap', toPort: 'in' },
+          { from: 'restore', fromPort: 'out', to: 'do_restore', toPort: 'in' },
+        ],
+      },
+    ],
     rtpcs: [
       {
         id: R.INTENSITY,
@@ -370,8 +458,11 @@ export function makeDemoProject() {
         tracks: [
           track(0, 'Pad', [item(0, A.EXPLORE_PAD, 0, 8)]),
           track(1, 'Arp', [item(0, A.EXPLORE_ARP, 0, 8, { gain: 0.9 })], { pan: 0.25 }),
-          // WebCLAP instrument layer, faded in by `intensity` (縦遷移/vertical layering).
+          // WebCLAP instrument layer, faded in continuously by the `intensity`
+          // blend curve (縦遷移/vertical layering, see `blends`).
           instrTrack(2, 'Synth Lead', I.SYNTH, synthLeadNotes, { pan: -0.2 }),
+          // VCSL sampler piano (real multi-sampled instrument, embedded).
+          instrTrack(3, 'Piano', I.PIANO, pianoNotes, { volume: 0.9, pan: 0.1 }),
         ],
         anchors: [
           { id: 0, name: 'Entry', beat: 0 },
@@ -447,18 +538,8 @@ export function makeDemoProject() {
         id: C.ON_INTENSITY,
         name: 'on_intensity_changed',
         rules: [
-          // 縦遷移 (vertical layering): fade the WebCLAP synth lead in/out of Explore
-          // as `intensity` crosses 0.5 — a stem added on top, same section.
-          {
-            condition: "section == 'Explore' && intensity >= 0.5",
-            stopIfMatched: true,
-            actions: [{ type: 'setTrackGain', section: S.EXPLORE, track: 2, gain: 1, fadeMs: 600 }],
-          },
-          {
-            condition: "section == 'Explore'",
-            stopIfMatched: true,
-            actions: [{ type: 'setTrackGain', section: S.EXPLORE, track: 2, gain: 0, fadeMs: 800 }],
-          },
+          // (The Explore synth-lead layer is faded by the `blends` curve now —
+          // v3 vertical transitions replaced the old setTrackGain rules here.)
           {
             condition: "section == 'Battle_Low' && intensity >= 0.6",
             stopIfMatched: true,
@@ -521,15 +602,8 @@ export function makeDemoProject() {
         name: 'on_module_start',
         rules: [
           {
-            // Start with the synth-lead layer silent; intensity fades it in.
-            condition: '',
-            stopIfMatched: false,
-            actions: [
-              { type: 'setTrackGain', section: S.EXPLORE, track: 2, gain: 0, fadeMs: 0 },
-            ],
-          },
-          {
-            // Every playthrough starts a little differently.
+            // Every playthrough starts a little differently. (The synth-lead
+            // layer starts silent via its intensity blend curve.)
             condition: 'rand < 0.35',
             stopIfMatched: false,
             actions: [

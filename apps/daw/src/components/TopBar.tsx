@@ -3,12 +3,13 @@ import { useStore, store } from '../store';
 import { usePreview, preview } from '../preview';
 import { importIamWasm, downloadBytes } from '../audio';
 import { loadDemoProject } from '../demo';
-import { emptyProject } from '@iam/pack';
+import { emptyProject, mergeProjects } from '@iam/pack';
 
 export function TopBar() {
   const s = useStore();
   const pv = usePreview();
   const fileRef = useRef<HTMLInputElement>(null);
+  const mergeRef = useRef<HTMLInputElement>(null);
 
   const exportModule = async () => {
     try {
@@ -27,6 +28,33 @@ export function TopBar() {
       store.loadProject(project, assets, bundles);
     } catch (e) {
       alert(`Open failed:\n${e instanceof Error ? e.message : e}`);
+    }
+  };
+
+  /**
+   * Imports another project's sections/assets/plugins/logic into this one
+   * (all ids remapped) so track transitions can pull content from it.
+   */
+  const mergeFile = async (f: File) => {
+    try {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const { project, assets, bundles } = importIamWasm(bytes);
+      store.update((st) => {
+        const res = mergeProjects(st.project, project);
+        for (const a of assets) {
+          const newId = res.assetIdMap.get(a.id);
+          if (newId !== undefined) st.assets.set(newId, { ...a, id: newId });
+        }
+        for (const [srcId, data] of bundles) {
+          const newId = res.pluginIdMap.get(srcId);
+          if (newId !== undefined && !st.pluginBundles.has(newId)) {
+            st.pluginBundles.set(newId, data);
+          }
+        }
+      });
+      alert(`Merged '${project.name}': sections/assets/plugins imported with new ids.`);
+    } catch (e) {
+      alert(`Merge failed:\n${e instanceof Error ? e.message : e}`);
     }
   };
 
@@ -111,6 +139,12 @@ export function TopBar() {
       <button onClick={newProject}>New</button>
       <button onClick={loadDemoProject}>Demo</button>
       <button onClick={() => fileRef.current?.click()}>Open .iam.wasm</button>
+      <button
+        onClick={() => mergeRef.current?.click()}
+        title="Import another project's sections/assets/plugins into this one (track transitions can then borrow its audio)"
+      >
+        Merge .iam.wasm
+      </button>
       <button className="primary" onClick={exportModule}>
         Export .iam.wasm
       </button>
@@ -122,6 +156,17 @@ export function TopBar() {
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) openFile(f);
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={mergeRef}
+        type="file"
+        accept=".wasm"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) mergeFile(f);
           e.target.value = '';
         }}
       />

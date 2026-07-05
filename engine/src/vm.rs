@@ -48,6 +48,22 @@ pub fn eval(code: &[u8], env: &mut dyn VmEnv) -> bool {
     if code.is_empty() {
         return true;
     }
+    match eval_value(code, env) {
+        Some(v) => truthy(v),
+        None => false,
+    }
+}
+
+/// Evaluates value bytecode (v3 dynamic action parameters), returning the
+/// single f32 left on the stack. Empty or malformed programs yield None.
+pub fn eval_num(code: &[u8], env: &mut dyn VmEnv) -> Option<f32> {
+    if code.is_empty() {
+        return None;
+    }
+    eval_value(code, env)
+}
+
+fn eval_value(code: &[u8], env: &mut dyn VmEnv) -> Option<f32> {
     let mut stack = [0f32; MAX_STACK];
     let mut sp: usize = 0;
     let mut pc: usize = 0;
@@ -55,7 +71,7 @@ pub fn eval(code: &[u8], env: &mut dyn VmEnv) -> bool {
     macro_rules! push {
         ($v:expr) => {{
             if sp >= MAX_STACK {
-                return false;
+                return None;
             }
             stack[sp] = $v;
             sp += 1;
@@ -64,7 +80,7 @@ pub fn eval(code: &[u8], env: &mut dyn VmEnv) -> bool {
     macro_rules! pop {
         () => {{
             if sp == 0 {
-                return false;
+                return None;
             }
             sp -= 1;
             stack[sp]
@@ -85,7 +101,7 @@ pub fn eval(code: &[u8], env: &mut dyn VmEnv) -> bool {
         match op {
             0x01 => {
                 if pc + 4 > code.len() {
-                    return false;
+                    return None;
                 }
                 let v = f32::from_le_bytes([code[pc], code[pc + 1], code[pc + 2], code[pc + 3]]);
                 pc += 4;
@@ -93,7 +109,7 @@ pub fn eval(code: &[u8], env: &mut dyn VmEnv) -> bool {
             }
             0x02 => {
                 if pc + 4 > code.len() {
-                    return false;
+                    return None;
                 }
                 let id =
                     u32::from_le_bytes([code[pc], code[pc + 1], code[pc + 2], code[pc + 3]]);
@@ -102,7 +118,7 @@ pub fn eval(code: &[u8], env: &mut dyn VmEnv) -> bool {
             }
             0x03 => {
                 if pc >= code.len() {
-                    return false;
+                    return None;
                 }
                 let id = code[pc];
                 pc += 1;
@@ -128,8 +144,12 @@ pub fn eval(code: &[u8], env: &mut dyn VmEnv) -> bool {
                 let a = pop!();
                 push!(b2f(!truthy(a)));
             }
-            _ => return false,
+            _ => return None,
         }
     }
-    sp == 1 && truthy(stack[0])
+    if sp == 1 {
+        Some(stack[0])
+    } else {
+        None
+    }
 }

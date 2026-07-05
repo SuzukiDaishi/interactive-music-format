@@ -5,6 +5,7 @@
  */
 import simpleSynthUrl from '../../../wclap/z-audio-simple-synth.wclap.tar.gz?url';
 import formulaPianoUrl from '../../../wclap/z-audio-formula-piano.wclap.tar.gz?url';
+import vcslPianoUrl from '../../../wclap/z-audio-vcsl-piano.wclap.tar.gz?url';
 import formulaDrumsUrl from '../../../wclap/z-audio-formula-drums.wclap.tar.gz?url';
 import simpleEqUrl from '../../../wclap/z-audio-simple-eq.wclap.tar.gz?url';
 import limiterUrl from '../../../wclap/z-audio-limiter.wclap.tar.gz?url';
@@ -24,6 +25,7 @@ export interface WclapLibraryEntry {
 export const WCLAP_LIBRARY: WclapLibraryEntry[] = [
   { clapPluginId: 'dev.zaudio.simple-synth', name: 'Z Audio Simple Synth', kind: 'instrument', url: simpleSynthUrl },
   { clapPluginId: 'dev.zaudio.formula-piano', name: 'Z Audio Formula Piano', kind: 'instrument', url: formulaPianoUrl },
+  { clapPluginId: 'dev.zaudio.vcsl-piano', name: 'Z Audio VCSL Piano', kind: 'instrument', url: vcslPianoUrl },
   { clapPluginId: 'dev.zaudio.formula-drums', name: 'Z Audio Formula Drum Set', kind: 'instrument', url: formulaDrumsUrl },
   { clapPluginId: 'dev.zaudio.simple-eq', name: 'Z Audio Simple EQ', kind: 'effect', url: simpleEqUrl },
   { clapPluginId: 'dev.zaudio.limiter', name: 'Z Audio Limiter', kind: 'effect', url: limiterUrl },

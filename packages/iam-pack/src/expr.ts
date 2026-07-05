@@ -314,6 +314,17 @@ export function compileExpression(source: string, project: IamProject): Uint8Arr
   return new Uint8Array(out.bytes);
 }
 
+/**
+ * Compiles a numeric value expression (v3 dynamic action parameters, e.g. a
+ * gain computed from an RTPC). Same language and bytecode as conditions —
+ * the engine reads the top-of-stack value as a number instead of a boolean.
+ * Empty source is rejected: a value expression must produce a value.
+ */
+export function compileValueExpression(source: string, project: IamProject): Uint8Array {
+  if (!source.trim()) throw new ExprError('Value expression must not be empty');
+  return compileExpression(source, project);
+}
+
 /** Validates an expression, returning an error message or null. */
 export function checkExpression(source: string, project: IamProject): string | null {
   try {

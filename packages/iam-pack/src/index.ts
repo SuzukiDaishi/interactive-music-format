@@ -2,4 +2,8 @@ export * from './model.js';
 export * from './expr.js';
 export * from './encode.js';
 export * from './decode.js';
+export * from './graph.js';
+export * from './smf.js';
+export * from './merge.js';
+export * from './migrate.js';
 export * from './wasm-container.js';

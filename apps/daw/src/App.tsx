@@ -3,12 +3,18 @@ import { TopBar } from './components/TopBar';
 import { SectionList } from './components/SectionList';
 import { AssetPanel } from './components/AssetPanel';
 import { Timeline } from './components/Timeline';
-import { RtpcPanel } from './components/RtpcPanel';
-import { CuePanel } from './components/CuePanel';
-import { PluginPanel } from './components/PluginPanel';
+import { RoutingPanel } from './components/RoutingPanel';
+import { ScriptGraphPanel } from './components/ScriptGraphPanel';
+import { LivePanel } from './components/LivePanel';
 import { EventLog } from './components/EventLog';
 import { store, useStore } from './store';
 import { loadDemoProject } from './demo';
+
+const VIEWS = [
+  ['arrange', '🎹 Arrange', '配置', 'セクション・トラック・クリップをタイムラインで編集'],
+  ['routing', '🔀 Routing', '配線', 'パラメータ・ブレンド・プラグイン・MIDI をノードで配線'],
+  ['logic', '⚡ Logic', 'ロジック', 'トリガ→条件→アクションのスクリプトグラフ'],
+] as const;
 
 export function App() {
   const s = useStore();
@@ -55,16 +61,30 @@ export function App() {
           <AssetPanel />
         </div>
         <div className="col center">
-          {s.selectedSection ? (
+          <div className="center-tabs">
+            {VIEWS.map(([id, label, jp, tip]) => (
+              <button
+                key={id}
+                className={s.centerView === id ? 'tab active' : 'tab'}
+                title={tip}
+                onClick={() => store.touch((st) => (st.centerView = id))}
+              >
+                {label} <span className="tab-jp">{jp}</span>
+              </button>
+            ))}
+          </div>
+          {s.centerView === 'routing' ? (
+            <RoutingPanel />
+          ) : s.centerView === 'logic' ? (
+            <ScriptGraphPanel />
+          ) : s.selectedSection ? (
             <Timeline key={s.selectedSection.id} />
           ) : (
             <div className="placeholder">Add or select a section to edit its timeline</div>
           )}
         </div>
-        <div className="col right">
-          <RtpcPanel />
-          <PluginPanel />
-          <CuePanel />
+        <div className="col right slim">
+          <LivePanel />
           <EventLog />
         </div>
       </div>

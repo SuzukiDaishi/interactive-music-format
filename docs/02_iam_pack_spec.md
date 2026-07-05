@@ -1,9 +1,13 @@
-# 02. IAMP データパック バイナリ仕様 v2 (normative)
+# 02. IAMP データパック バイナリ仕様 v3 (normative)
 
+> **v3 で追加**: 縦ブレンド曲線 (`BLND`)、RTPC→プラグインパラメータ変調 (`PMOD`)、
+> ノートジェネレータルーティング (`NSRC`)、アクション 0x0A〜0x0D（timing 付き
+> トラックゲイン・トラック単位遷移 `gotoTrack`・プラグインパラメータ・値式付き
+> setRtpc）。デコーダは **v2 と v3 の両方**を受理する（v1 は不可）。
+>
 > **v2 で追加**: WCLAP プラグイン (`WCLP`)、プラグインインスタンス (`PINS`)、
 > インストゥルメント (MIDI) トラックとノート、`goto`/`gotoRandom` の bridge
 > （横遷移用ブリッジセクション）。詳細は `docs/06_wclap_midi_bridges.md`。
-> v1 パックは v2 エンジンでは読み込めない（META から再エクスポートが必要）。
 
 `.iam.wasm` のカスタムセクション `iam.pack` に格納されるデータ本体のレイアウト。
 参照実装: エンコーダ `packages/iam-pack/src/encode.ts` / デコーダ `engine/src/pack.rs`。
@@ -24,7 +28,7 @@
 ```txt
 ┌──────────────────────────────┐
 │ magic   u8[4]  = "IAMP"      │
-│ version u32    = 2           │
+│ version u32    = 3 (2も受理) │
 │ chunk_count u32              │
 ├─ chunk × chunk_count ────────┤
 │  id      u8[4]   (ASCII)     │
@@ -45,6 +49,9 @@
 | `ABNK` | オーディオバンク | 任意 |
 | `WCLP` | WCLAP プラグインバンク（埋め込みバイナリ含む） | 任意 |
 | `PINS` | プラグインインスタンス + マスターエフェクト鎖 | 任意 |
+| `BLND` | 縦ブレンド曲線 (RTPC→トラックゲイン)  ← v3 | 任意 |
+| `PMOD` | RTPC→CLAP パラメータ変調（ホスト用）  ← v3 | 任意 |
+| `NSRC` | ノートジェネレータルーティング（ホスト用）  ← v3 | 任意 |
 | `META` | ツール用 JSON（DAW プロジェクト再編集用） | 任意 |
 
 同一 ID のチャンクが複数ある場合の動作は未定義（エンコーダは 1 つずつ出力すること）。
@@ -171,6 +178,10 @@ binding_count × {
 | 0x07 | `setRtpc` | u32 rtpc, f32 value（RTPC トリガを再帰発火。深さ上限 8） |
 | 0x08 | `oneShot` | u32 asset, f32 gain, u8 timing, u8[3] pad — スティンガー再生 |
 | 0x09 | `gotoRandom` | u8 target_count, u8 timing, u8 crossfade, u8 pad, f32 fade_ms, **u32 bridge**(`NONE_ID`=直接), target_count × { u32 section, u32 anchor, f32 weight } — 重み付き抽選 goto（bridge は v2） |
+| 0x0A | `setTrackGainTimed` (v3) | u32 section, u32 track, f32 gain, f32 fade_ms, u8 timing, u8 pad, u16 expr_len, u8[expr_len] value_expr — timing で量子化。expr_len>0 なら発火時に値式を評価し gain を上書き |
+| 0x0B | `gotoTrack` (v3) | u32 section, u32 track, u32 src_section(`NONE_ID`=解除), u32 src_track, u8 timing, u8 crossfade, u16 pad, f32 fade_ms — 再生中セクションの 1 トラックだけを別セクションのトラック内容へ差し替え（§05） |
+| 0x0C | `setPluginParam` (v3) | u32 instance, u32 param, f32 value, u16 expr_len, u16 pad, u8[expr_len] value_expr — PluginParam イベント(9)としてホストへ転送 |
+| 0x0D | `setRtpcDyn` (v3) | u32 rtpc, f32 value, u16 expr_len, u16 pad, u8[expr_len] value_expr — 値式評価つき setRtpc |
 
 ### timing 列挙
 
@@ -253,6 +264,52 @@ u32 master_effect_count
 master_effect_count × u32 instance_id   (適用順)
 ```
 
+## 6.7. `BLND` — 縦ブレンド曲線（v3）
+
+```txt
+u32 blend_count
+blend_count × {
+  u32 id
+  u32 rtpc_id
+  u32 section_id
+  u32 track_id
+  u16 point_count   (>=1)
+  u16 pad
+  point_count × { f32 x, f32 y }   (x は昇順・RTPC 値、y はリニアゲイン)
+}
+```
+
+エンジンが毎ブロック評価する連続的な縦遷移: 平滑化済み RTPC 値で区分線形補間
+（範囲外はクランプ）した係数が `track.volume × cue ゲイン × player フェード` に
+乗算される。instrument トラックにも `iam_instrument_gain` を通じて適用される。
+
+## 6.8. `PMOD` — RTPC→プラグインパラメータ変調（v3、ホスト用）
+
+```txt
+u32 mod_count
+mod_count × {
+  u32 instance_id
+  u32 clap_param_id
+  u32 rtpc_id
+  u16 point_count   (>=1)
+  u16 pad
+  point_count × { f32 x, f32 y }
+}
+```
+
+エンジンはスキップする。JS ホストが毎ブロック RTPC 値をカーブ変換し、変化時のみ
+CLAP `PARAM_VALUE` イベントとしてプラグインへ送る。
+
+## 6.9. `NSRC` — ノートジェネレータルーティング（v3、ホスト用）
+
+```txt
+u32 source_count
+source_count × { u32 generator_instance_id, u32 target_instance_id }
+```
+
+ジェネレータの CLAP ノート出力（out_events）を同一ブロック内でターゲット音源の
+入力へ転送する。ジェネレータ自身の音声出力は破棄される。
+
 ## 7. `META` — ツールメタデータ（任意）
 
 ペイロードは UTF-8 JSON。トップレベルは `{ "project": <IamProject> }`。
@@ -273,5 +330,6 @@ master_effect_count × u32 instance_id   (適用順)
 - Binding の `cue_id` / 参照 Section / Anchor / RTPC が存在すること
 - `start_section` が存在する Section か `NONE_ID` であること
 - ABNK の `channels ∈ {1,2}`, `sample_rate > 0`, format ∈ {0,1}
+- `BLND` の参照 Section / Track / RTPC が存在し、point_count >= 1 であること (v3)
 
 エンジンのエラーコードは [04_host_api_spec.md](./04_host_api_spec.md) §`iam_load_pack` を参照。

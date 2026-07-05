@@ -17,6 +17,8 @@ const MAX_MIDI: usize = 512;
 const MAX_CUE_DEPTH: u32 = 8;
 const MAX_PLAYERS: usize = 8;
 const MAX_ONESHOTS: usize = 16;
+const MAX_PENDING_GAINS: usize = 64;
+const MAX_PENDING_TRACK_GOTOS: usize = 64;
 
 // MIDI event status bytes (see docs/06_wclap_midi_bridges.md)
 pub const MIDI_NOTE_OFF: u8 = 0;
@@ -45,6 +47,12 @@ pub const EV_ENDED: u32 = 5;
 pub const EV_LOOPED: u32 = 6;
 pub const EV_ONESHOT: u32 = 7;
 pub const EV_RTPC_CHANGED: u32 = 8;
+/// a = plugin instance id, b = CLAP param id, c = value. The engine's audio
+/// path ignores this; the JS host applies it to the plugin rack (v3).
+pub const EV_PLUGIN_PARAM: u32 = 9;
+/// a = dest track id, b = source section id (NONE_ID = override cleared),
+/// c = source track id as f32 (v3).
+pub const EV_TRACK_GOTO: u32 = 10;
 
 #[derive(Clone, Copy)]
 pub struct Event {
@@ -64,8 +72,9 @@ struct SecDerived {
     anchors: Vec<(u32, f64)>,
     /// Per track: per item (start, length, offset, fade_in, fade_out) in samples.
     items: Vec<Vec<ItemDerived>>,
-    /// Note on/off events (bank samples) for instrument tracks, sorted by pos.
-    notes: Vec<NoteEvt>,
+    /// Per track: note on/off events (bank samples), sorted by pos. Empty for
+    /// audio tracks. Kept per track so track overrides can swap note streams.
+    notes: Vec<Vec<NoteEvt>>,
 }
 
 #[derive(Clone, Copy)]
@@ -200,6 +209,42 @@ struct PendingOneShot {
     at: f64,
 }
 
+/// A quantized track-gain change (v3 setTrackGain with timing).
+struct PendingGain {
+    sec: usize,
+    track: usize,
+    gain: f32,
+    fade_ms: f32,
+    /// Main-player position (bank samples) at which this fires.
+    at: f64,
+}
+
+/// A per-track content override on the main player (v3 gotoTrack): the dest
+/// track slot renders another section's track, beat-synced to the main
+/// timeline. Mixer state (volume/pan/mute/gain/blends) stays on the dest slot.
+#[derive(Clone, Copy)]
+struct TrackOverride {
+    /// Current source (section idx, track idx); None = the slot's own content
+    /// (used while crossfading back after the override is cleared).
+    src: Option<(usize, usize)>,
+    /// Previous source faded out during the crossfade.
+    prev: Option<(usize, usize)>,
+    /// Weight of `src`; `prev` renders at 1 - fade.
+    fade: Smoothed,
+}
+
+/// A scheduled gotoTrack (multi-slot, unlike the single section `pending`).
+struct PendingTrackGoto {
+    /// Dest track index within the main section.
+    track: usize,
+    /// New source; None clears the override.
+    src: Option<(usize, usize)>,
+    crossfade: bool,
+    fade_ms: f32,
+    /// Main-player position (bank samples) at which this fires.
+    at: f64,
+}
+
 struct RtpcState {
     smooth: Smoothed,
     smoothing_ms: f32,
@@ -220,8 +265,15 @@ pub struct Runtime {
     oneshots: Vec<OneShot>,
     pending: Option<Pending>,
     pending_oneshots: Vec<PendingOneShot>,
+    pending_gains: Vec<PendingGain>,
+    pending_track_gotos: Vec<PendingTrackGoto>,
+    /// Per main-section track: active content override (sized in spawn_main,
+    /// cleared on every section change).
+    track_overrides: Vec<Option<TrackOverride>>,
     rtpc: Vec<RtpcState>,
     track_gains: Vec<Vec<Smoothed>>,
+    /// Per (section, track): blend curves as (rtpc state idx, pack.blends idx).
+    blend_refs: Vec<Vec<Vec<(usize, usize)>>>,
     loop_flags: Vec<bool>,
     events: VecDeque<Event>,
     midi: VecDeque<MidiEvt>,
@@ -233,6 +285,27 @@ pub struct Runtime {
 
 fn sec_index(pack: &Pack, id: u32) -> Option<usize> {
     pack.sections.iter().position(|s| s.id == id)
+}
+
+/// Piecewise-linear curve lookup, clamped outside the point range.
+fn curve_eval(points: &[(f32, f32)], x: f32) -> f32 {
+    let Some(&(x0, y0)) = points.first() else {
+        return 1.0;
+    };
+    if x <= x0 {
+        return y0;
+    }
+    for w in points.windows(2) {
+        let (xa, ya) = w[0];
+        let (xb, yb) = w[1];
+        if x <= xb {
+            if xb - xa <= f32::EPSILON {
+                return yb;
+            }
+            return ya + (yb - ya) * ((x - xa) / (xb - xa));
+        }
+    }
+    points[points.len() - 1].1
 }
 
 impl Runtime {
@@ -272,33 +345,34 @@ impl Runtime {
                         .collect()
                 })
                 .collect();
-            let mut notes: Vec<NoteEvt> = Vec::new();
+            let mut notes: Vec<Vec<NoteEvt>> = Vec::with_capacity(s.tracks.len());
             for t in &s.tracks {
-                if t.kind != 1 || t.instrument == NONE_ID {
-                    continue;
+                let mut track_notes: Vec<NoteEvt> = Vec::new();
+                if t.kind == 1 && t.instrument != NONE_ID {
+                    for n in &t.notes {
+                        let on = n.start_beat as f64 * spb;
+                        let off = (n.start_beat + n.length_beats) as f64 * spb;
+                        track_notes.push(NoteEvt {
+                            pos: on,
+                            instance: t.instrument,
+                            status: MIDI_NOTE_ON,
+                            key: n.key,
+                            channel: n.channel,
+                            velocity: n.velocity,
+                        });
+                        track_notes.push(NoteEvt {
+                            pos: off,
+                            instance: t.instrument,
+                            status: MIDI_NOTE_OFF,
+                            key: n.key,
+                            channel: n.channel,
+                            velocity: 0.0,
+                        });
+                    }
+                    track_notes.sort_by(|a, b| a.pos.partial_cmp(&b.pos).unwrap());
                 }
-                for n in &t.notes {
-                    let on = n.start_beat as f64 * spb;
-                    let off = (n.start_beat + n.length_beats) as f64 * spb;
-                    notes.push(NoteEvt {
-                        pos: on,
-                        instance: t.instrument,
-                        status: MIDI_NOTE_ON,
-                        key: n.key,
-                        channel: n.channel,
-                        velocity: n.velocity,
-                    });
-                    notes.push(NoteEvt {
-                        pos: off,
-                        instance: t.instrument,
-                        status: MIDI_NOTE_OFF,
-                        key: n.key,
-                        channel: n.channel,
-                        velocity: 0.0,
-                    });
-                }
+                notes.push(track_notes);
             }
-            notes.sort_by(|a, b| a.pos.partial_cmp(&b.pos).unwrap());
             sec.push(SecDerived {
                 samples_per_beat: spb,
                 length_samples: s.length_beats as f64 * spb,
@@ -327,6 +401,26 @@ impl Runtime {
             .collect();
         let loop_flags = pack.sections.iter().map(|s| s.loop_enabled).collect();
 
+        // Resolve blend curves onto (section, track) slots; curves referencing
+        // unknown ids were already rejected by pack validation.
+        let mut blend_refs: Vec<Vec<Vec<(usize, usize)>>> = pack
+            .sections
+            .iter()
+            .map(|s| s.tracks.iter().map(|_| Vec::new()).collect())
+            .collect();
+        for (bi, b) in pack.blends.iter().enumerate() {
+            let Some(si) = sec_index(&pack, b.section) else {
+                continue;
+            };
+            let Some(ti) = pack.sections[si].tracks.iter().position(|t| t.id == b.track) else {
+                continue;
+            };
+            let Some(ri) = pack.rtpcs.iter().position(|r| r.id == b.rtpc) else {
+                continue;
+            };
+            blend_refs[si][ti].push((ri, bi));
+        }
+
         Runtime {
             pack,
             sec,
@@ -340,8 +434,12 @@ impl Runtime {
             oneshots: Vec::new(),
             pending: None,
             pending_oneshots: Vec::new(),
+            pending_gains: Vec::new(),
+            pending_track_gotos: Vec::new(),
+            track_overrides: Vec::new(),
             rtpc,
             track_gains,
+            blend_refs,
             loop_flags,
             events: VecDeque::new(),
             midi: VecDeque::new(),
@@ -438,6 +536,8 @@ impl Runtime {
     pub fn stop(&mut self, fade_ms: f32) {
         self.pending = None;
         self.pending_oneshots.clear();
+        self.pending_gains.clear();
+        self.pending_track_gotos.clear();
         self.push_all_notes_off();
         for p in &mut self.players {
             p.dying = true;
@@ -487,6 +587,8 @@ impl Runtime {
             self.players[mi].pos = pos;
             self.players[mi].fresh = true;
             self.pending = None;
+            self.pending_gains.clear();
+            self.pending_track_gotos.clear();
         }
     }
 
@@ -507,6 +609,29 @@ impl Runtime {
 
     pub fn position_samples(&self) -> f64 {
         self.main.map(|i| self.players[i].pos).unwrap_or(0.0)
+    }
+
+    /// Effective BPM of the playing section (project BPM when idle). Hosts use
+    /// this to build CLAP transport events for plugins.
+    pub fn bpm(&self) -> f32 {
+        let base = self.pack.bpm;
+        self.main
+            .map(|i| {
+                let s = &self.pack.sections[self.players[i].section];
+                if s.bpm > 0.0 {
+                    s.bpm
+                } else {
+                    base
+                }
+            })
+            .unwrap_or(base)
+    }
+
+    /// Beats per bar of the playing section (project signature when idle).
+    pub fn beats_per_bar(&self) -> f32 {
+        self.main
+            .map(|i| self.sec[self.players[i].section].beats_per_bar as f32)
+            .unwrap_or(self.pack.tsig_num.max(1) as f32)
     }
 
     // -- live mixer ----------------------------------------------------------
@@ -553,10 +678,19 @@ impl Runtime {
             return 1.0;
         };
         let sec_idx = self.players[mi].section;
-        for t in &self.pack.sections[sec_idx].tracks {
-            if t.kind == 1 && t.instrument == instance_id {
-                return if t.muted { 0.0 } else { t.volume.max(0.0) };
+        for (ti, t) in self.pack.sections[sec_idx].tracks.iter().enumerate() {
+            // The slot's effective source decides which instance sounds here;
+            // the slot itself supplies the mixer state (volume/mute/cue
+            // gain/blends), so vertical mixing also drives synth tracks.
+            if self.slot_instrument(sec_idx, ti) != instance_id {
+                continue;
             }
+            if t.muted {
+                return 0.0;
+            }
+            let cue_gain = self.track_gains[sec_idx][ti].value;
+            let blend = self.blend_gain_at(sec_idx, ti, 0);
+            return (t.volume.max(0.0) * cue_gain.max(0.0) * blend).max(0.0);
         }
         1.0
     }
@@ -596,6 +730,98 @@ impl Runtime {
 
     pub fn trigger_cue(&mut self, cue_id: u32) {
         self.run_cue_by_id(cue_id);
+    }
+
+    // -- vertical blends / track overrides ------------------------------------
+
+    /// Combined blend-curve gain for (section, track) with each driving RTPC
+    /// sampled `f` frames into the current chunk (smoothed value).
+    fn blend_gain_at(&self, si: usize, ti: usize, f: usize) -> f32 {
+        let refs = &self.blend_refs[si][ti];
+        if refs.is_empty() {
+            return 1.0;
+        }
+        let mut g = 1.0f32;
+        for &(ri, bi) in refs {
+            let x = self.rtpc[ri].smooth.at(f);
+            g *= curve_eval(&self.pack.blends[bi].points, x);
+        }
+        g.max(0.0)
+    }
+
+    /// Effective content source for a main-section track slot: the override
+    /// source when one is active, otherwise the slot itself.
+    fn effective_source(&self, main_sec: usize, ti: usize) -> (usize, usize) {
+        match self.track_overrides.get(ti).copied().flatten() {
+            Some(TrackOverride { src: Some(s), .. }) => s,
+            _ => (main_sec, ti),
+        }
+    }
+
+    /// The instrument instance currently sounding on a main-section slot
+    /// (NONE_ID when the effective source is not an instrument track).
+    fn slot_instrument(&self, main_sec: usize, ti: usize) -> u32 {
+        let (es, et) = self.effective_source(main_sec, ti);
+        let t = &self.pack.sections[es].tracks[et];
+        if t.kind == 1 {
+            t.instrument
+        } else {
+            NONE_ID
+        }
+    }
+
+    fn execute_track_goto(
+        &mut self,
+        ti: usize,
+        src: Option<(usize, usize)>,
+        crossfade: bool,
+        fade_ms: f32,
+    ) {
+        let Some(mi) = self.main else {
+            return;
+        };
+        let main_sec = self.players[mi].section;
+        if ti >= self.pack.sections[main_sec].tracks.len() {
+            return;
+        }
+        let old_inst = self.slot_instrument(main_sec, ti);
+        let prev = match self.track_overrides[ti] {
+            Some(o) => o.src,
+            None => None,
+        };
+        if prev == src {
+            return;
+        }
+        let mut fade = Smoothed::new(0.0);
+        fade.set(1.0, if crossfade { fade_ms } else { 0.0 }, self.out_sr);
+        if src.is_none() && !crossfade {
+            self.track_overrides[ti] = None;
+        } else {
+            self.track_overrides[ti] = Some(TrackOverride { src, prev, fade });
+        }
+        // Silence the outgoing note stream so its synth voices don't hang
+        // (MIDI switches at the boundary; only audio crossfades).
+        let new_inst = self.slot_instrument(main_sec, ti);
+        if old_inst != NONE_ID && old_inst != new_inst {
+            let fo = self.block_frame as u32;
+            self.push_midi(MidiEvt {
+                instance: old_inst,
+                frame_offset: fo,
+                status: MIDI_ALL_NOTES_OFF,
+                key: 0,
+                channel: 0,
+                velocity: 0.0,
+            });
+        }
+        let track_id = self.pack.sections[main_sec].tracks[ti].id;
+        let (ev_sec, ev_track) = match src {
+            Some((ss, st)) => (
+                self.pack.sections[ss].id,
+                self.pack.sections[ss].tracks[st].id as f32,
+            ),
+            None => (NONE_ID, 0.0),
+        };
+        self.push_event(EV_TRACK_GOTO, track_id, ev_sec, ev_track);
     }
 
     // -- player helpers ------------------------------------------------------
@@ -638,6 +864,13 @@ impl Runtime {
             fresh: true,
         });
         self.main = Some(self.players.len() - 1);
+        // Track overrides and their schedules are per-section state: any
+        // section change drops them (the new section starts unmodified).
+        self.track_overrides.clear();
+        self.track_overrides
+            .resize(self.pack.sections[sec_idx].tracks.len(), None);
+        self.pending_track_gotos.clear();
+        self.pending_gains.clear();
         let to_id = self.pack.sections[sec_idx].id;
         self.push_event(EV_SECTION_CHANGED, from_section_id, to_id, 0.0);
         self.fire_trigger(TriggerMatch::SectionStart(to_id));
@@ -773,6 +1006,16 @@ impl Runtime {
         self.cue_depth -= 1;
     }
 
+    /// Evaluates a v3 value expression, falling back to the static value on
+    /// empty/malformed bytecode.
+    fn eval_value(&mut self, expr: &[u8], fallback: f32) -> f32 {
+        if expr.is_empty() {
+            return fallback;
+        }
+        let mut env = EnvView { rt: self };
+        vm::eval_num(expr, &mut env).unwrap_or(fallback)
+    }
+
     fn apply_action(&mut self, a: &Action) {
         match *a {
             Action::Goto {
@@ -833,6 +1076,112 @@ impl Runtime {
                 };
                 let out_sr = self.out_sr;
                 self.track_gains[si][ti].set(gain.max(0.0), fade_ms, out_sr);
+            }
+            Action::SetTrackGainTimed {
+                section,
+                track,
+                gain,
+                fade_ms,
+                timing,
+                ref expr,
+            } => {
+                let Some(si) = sec_index(&self.pack, section) else {
+                    return;
+                };
+                let Some(ti) = self.pack.sections[si].tracks.iter().position(|t| t.id == track)
+                else {
+                    return;
+                };
+                let g = self.eval_value(expr, gain).max(0.0);
+                if timing == Timing::Immediate || self.main.is_none() {
+                    let out_sr = self.out_sr;
+                    self.track_gains[si][ti].set(g, fade_ms, out_sr);
+                } else {
+                    let at = self.timing_pos(timing);
+                    if self.pending_gains.len() < MAX_PENDING_GAINS {
+                        self.pending_gains.push(PendingGain {
+                            sec: si,
+                            track: ti,
+                            gain: g,
+                            fade_ms,
+                            at,
+                        });
+                    }
+                }
+            }
+            Action::GotoTrack {
+                section,
+                track,
+                src_section,
+                src_track,
+                timing,
+                crossfade,
+                fade_ms,
+            } => {
+                let Some(mi) = self.main else {
+                    return;
+                };
+                let main_sec = self.players[mi].section;
+                // Track transitions only apply to the playing section.
+                if sec_index(&self.pack, section) != Some(main_sec) {
+                    return;
+                }
+                let Some(ti) = self.pack.sections[main_sec]
+                    .tracks
+                    .iter()
+                    .position(|t| t.id == track)
+                else {
+                    return;
+                };
+                let src = if src_section == NONE_ID {
+                    None
+                } else {
+                    let Some(ss) = sec_index(&self.pack, src_section) else {
+                        return;
+                    };
+                    let Some(st) = self.pack.sections[ss]
+                        .tracks
+                        .iter()
+                        .position(|t| t.id == src_track)
+                    else {
+                        return;
+                    };
+                    Some((ss, st))
+                };
+                if timing == Timing::Immediate {
+                    self.execute_track_goto(ti, src, crossfade, fade_ms);
+                } else {
+                    let at = self.timing_pos(timing);
+                    if self.pending_track_gotos.len() < MAX_PENDING_TRACK_GOTOS {
+                        // Last write wins per slot, mirroring the section
+                        // `pending` semantics.
+                        self.pending_track_gotos.retain(|p| p.track != ti);
+                        self.pending_track_gotos.push(PendingTrackGoto {
+                            track: ti,
+                            src,
+                            crossfade,
+                            fade_ms,
+                            at,
+                        });
+                    }
+                }
+            }
+            Action::SetPluginParam {
+                instance,
+                param,
+                value,
+                ref expr,
+            } => {
+                let v = self.eval_value(expr, value);
+                self.push_event(EV_PLUGIN_PARAM, instance, param, v);
+            }
+            Action::SetRtpcDyn {
+                rtpc,
+                value,
+                ref expr,
+            } => {
+                let v = self.eval_value(expr, value);
+                self.set_rtpc(rtpc, v);
             }
             Action::SetLoop { section, enabled } => {
                 if let Some(si) = sec_index(&self.pack, section) {
@@ -1090,6 +1439,37 @@ impl Runtime {
                     i += 1;
                 }
             }
+            // Quantized track gains due now.
+            let mut i = 0;
+            while i < self.pending_gains.len() {
+                let due = if fwd {
+                    pos + EPS >= self.pending_gains[i].at
+                } else {
+                    pos - EPS <= self.pending_gains[i].at
+                };
+                if due {
+                    let pg = self.pending_gains.remove(i);
+                    let out_sr = self.out_sr;
+                    self.track_gains[pg.sec][pg.track].set(pg.gain, pg.fade_ms, out_sr);
+                } else {
+                    i += 1;
+                }
+            }
+            // Scheduled track transitions due now.
+            let mut i = 0;
+            while i < self.pending_track_gotos.len() {
+                let due = if fwd {
+                    pos + EPS >= self.pending_track_gotos[i].at
+                } else {
+                    pos - EPS <= self.pending_track_gotos[i].at
+                };
+                if due {
+                    let tg = self.pending_track_gotos.remove(i);
+                    self.execute_track_goto(tg.track, tg.src, tg.crossfade, tg.fade_ms);
+                } else {
+                    i += 1;
+                }
+            }
 
             // Section boundary (end going forward, start going backward).
             let at_edge = if fwd { pos + EPS >= len } else { pos - EPS <= 0.0 };
@@ -1163,6 +1543,12 @@ impl Runtime {
         for po in &self.pending_oneshots {
             consider(po.at);
         }
+        for pg in &self.pending_gains {
+            consider(pg.at);
+        }
+        for tg in &self.pending_track_gotos {
+            consider(tg.at);
+        }
         // Anchors
         for (_, apos) in &d.anchors {
             consider(*apos);
@@ -1223,15 +1609,20 @@ impl Runtime {
 
         // MIDI: emit instrument note events crossed in this chunk. Only forward
         // playback drives synths (reverse note-on/off is musically undefined).
+        // Each track's stream comes from its effective source (the override
+        // target when a track goto is active), remapped beat-for-beat.
         if fwd {
             let step = self.step_bank();
-            let notes: Vec<MidiEvt> = self.sec[sec_idx]
-                .notes
-                .iter()
-                .filter(|n| in_range(n.pos))
-                .map(|n| {
+            let mut events: Vec<MidiEvt> = Vec::new();
+            for ti in 0..self.pack.sections[sec_idx].tracks.len() {
+                let (es, et) = self.effective_source(sec_idx, ti);
+                let notes = &self.sec[es].notes[et];
+                if notes.is_empty() {
+                    continue;
+                }
+                let to_event = |pos_rel_dest: f64, n: &NoteEvt| -> MidiEvt {
                     let rel = if step.abs() > 1e-12 {
-                        ((n.pos - old) / step).round() as i64
+                        (pos_rel_dest / step).round() as i64
                     } else {
                         0
                     };
@@ -1246,9 +1637,32 @@ impl Runtime {
                         channel: n.channel,
                         velocity: n.velocity,
                     }
-                })
-                .collect();
-            for e in notes {
+                };
+                if es == sec_idx && et == ti {
+                    for n in notes.iter().filter(|n| in_range(n.pos)) {
+                        events.push(to_event(n.pos - old, n));
+                    }
+                } else {
+                    // Foreign stream: map the crossed dest range into the
+                    // source timeline (wrapped by the source length).
+                    let ratio = self.sec[es].samples_per_beat
+                        / self.sec[sec_idx].samples_per_beat;
+                    let len = self.sec[es].length_samples;
+                    if len <= 0.0 {
+                        continue;
+                    }
+                    let src_old = (old * ratio).rem_euclid(len);
+                    let span = (new - old) * ratio;
+                    for n in notes {
+                        let d = (n.pos - src_old).rem_euclid(len);
+                        let hit = (fresh && d.abs() <= EPS) || (d > EPS && d <= span + EPS);
+                        if hit {
+                            events.push(to_event(d / ratio, n));
+                        }
+                    }
+                }
+            }
+            for e in events {
                 self.push_midi(e);
             }
         }
@@ -1290,6 +1704,119 @@ impl Runtime {
         }
     }
 
+    /// Renders the audio items of source track (src_si, src_ti) into `out`,
+    /// applying the mixer state of destination slot (dst_si, dst_ti): volume,
+    /// pan, cue gain smoother, player fade, blend curves and an optional
+    /// crossfade weight. When the source differs from the destination slot,
+    /// the destination timeline position is remapped into the source timeline
+    /// beat-for-beat, wrapping by the source section length.
+    #[allow(clippy::too_many_arguments)]
+    fn mix_track_items(
+        &self,
+        out: &mut [f32],
+        n: usize,
+        src_si: usize,
+        src_ti: usize,
+        dst_si: usize,
+        dst_ti: usize,
+        base_pos: f64,
+        step: f64,
+        vol: f32,
+        pan: f32,
+        tg: Smoothed,
+        pg: Smoothed,
+        weight: Option<(Smoothed, bool)>,
+    ) {
+        let out_ch = self.out_ch;
+        // Remap dest-timeline positions into the source timeline (beat-synced,
+        // wrapped by the source length) when rendering foreign content.
+        let remap = if src_si != dst_si || src_ti != dst_ti {
+            let ratio =
+                self.sec[src_si].samples_per_beat / self.sec[dst_si].samples_per_beat;
+            Some((ratio, self.sec[src_si].length_samples))
+        } else {
+            None
+        };
+        let has_blend = !self.blend_refs[dst_si][dst_ti].is_empty();
+
+        let pan = pan.clamp(-1.0, 1.0);
+        // Constant-power pan for mono sources; balance for stereo.
+        let pan_l = ((1.0 - pan) * 0.5).sqrt();
+        let pan_r = ((1.0 + pan) * 0.5).sqrt();
+        let bal_l = if pan > 0.0 { 1.0 - pan } else { 1.0 };
+        let bal_r = if pan < 0.0 { 1.0 + pan } else { 1.0 };
+
+        for item in &self.sec[src_si].items[src_ti] {
+            let asset = &self.pack.assets[item.asset_idx];
+            let asset_ratio = asset.sample_rate as f64 / self.pack.bank_sample_rate as f64;
+            let a_frames = asset.frames as usize;
+            if a_frames == 0 {
+                continue;
+            }
+            let a_ch = asset.channels as usize;
+            let data = &asset.data;
+
+            for f in 0..n {
+                let dst_pos = base_pos + step * f as f64;
+                let pos_f = match remap {
+                    Some((ratio, len)) if len > 0.0 => (dst_pos * ratio).rem_euclid(len),
+                    Some((ratio, _)) => dst_pos * ratio,
+                    None => dst_pos,
+                };
+                let rel = pos_f - item.start;
+                if rel < 0.0 || rel >= item.length {
+                    continue;
+                }
+                // Item fades (in beats originally, here samples).
+                let mut g = item.gain;
+                if item.fade_in > 0.0 && rel < item.fade_in {
+                    g *= (rel / item.fade_in) as f32;
+                }
+                if item.fade_out > 0.0 && (item.length - rel) < item.fade_out {
+                    g *= ((item.length - rel) / item.fade_out) as f32;
+                }
+                let src = (item.offset + rel) * asset_ratio;
+                if src < 0.0 {
+                    continue;
+                }
+                let i0 = src as usize;
+                if i0 + 1 >= a_frames {
+                    continue;
+                }
+                let frac = (src - i0 as f64) as f32;
+                let (mut l, mut r);
+                if a_ch == 1 {
+                    let s = data[i0] + (data[i0 + 1] - data[i0]) * frac;
+                    l = s * pan_l;
+                    r = s * pan_r;
+                } else {
+                    let l0 = data[i0 * 2];
+                    let l1 = data[i0 * 2 + 2];
+                    let r0 = data[i0 * 2 + 1];
+                    let r1 = data[i0 * 2 + 3];
+                    l = (l0 + (l1 - l0) * frac) * bal_l;
+                    r = (r0 + (r1 - r0) * frac) * bal_r;
+                }
+                let mut total = g * vol * tg.at(f) * pg.at(f);
+                if let Some((wf, complement)) = weight {
+                    let w = wf.at(f);
+                    total *= if complement { 1.0 - w } else { w };
+                }
+                if has_blend {
+                    total *= self.blend_gain_at(dst_si, dst_ti, f);
+                }
+                l *= total;
+                r *= total;
+                if out_ch == 1 {
+                    out[f] += (l + r) * 0.5;
+                } else {
+                    out[f * 2] += l;
+                    out[f * 2 + 1] += r;
+                }
+            }
+        }
+    }
+
     fn advance_smoothers(&mut self, n: usize) {
         for r in &mut self.rtpc {
             r.smooth.advance(n);
@@ -1297,6 +1824,16 @@ impl Runtime {
         for sg in &mut self.track_gains {
             for g in sg {
                 g.advance(n);
+            }
+        }
+        // Advance override crossfades; drop overrides that finished fading
+        // back to the slot's own content.
+        for ov in &mut self.track_overrides {
+            if let Some(o) = ov {
+                o.fade.advance(n);
+                if o.fade.value == o.fade.target && o.src.is_none() {
+                    *ov = None;
+                }
             }
         }
     }
@@ -1310,78 +1847,68 @@ impl Runtime {
                 let p = &self.players[pi];
                 (p.section, p.pos)
             };
-            let section = &self.pack.sections[sec_idx];
-            let derived = &self.sec[sec_idx];
+            let is_main = Some(pi) == self.main;
+            let pg = self.players[pi].fade;
+            let track_count = self.pack.sections[sec_idx].tracks.len();
 
-            for (ti, track) in section.tracks.iter().enumerate() {
+            for ti in 0..track_count {
+                let track = &self.pack.sections[sec_idx].tracks[ti];
                 if track.muted {
                     continue;
                 }
-                let tg = self.track_gains[sec_idx][ti];
                 let vol = track.volume;
-                let pan = track.pan.clamp(-1.0, 1.0);
-                // Constant-power pan for mono sources; balance for stereo.
-                let pan_l = ((1.0 - pan) * 0.5).sqrt();
-                let pan_r = ((1.0 + pan) * 0.5).sqrt();
-                let bal_l = if pan > 0.0 { 1.0 - pan } else { 1.0 };
-                let bal_r = if pan < 0.0 { 1.0 + pan } else { 1.0 };
-
-                for item in &derived.items[ti] {
-                    let asset = &self.pack.assets[item.asset_idx];
-                    let asset_ratio =
-                        asset.sample_rate as f64 / self.pack.bank_sample_rate as f64;
-                    let a_frames = asset.frames as usize;
-                    if a_frames == 0 {
-                        continue;
+                let pan = track.pan;
+                let tg = self.track_gains[sec_idx][ti];
+                // Track overrides only exist on the main player.
+                let ov = if is_main {
+                    self.track_overrides.get(ti).copied().flatten()
+                } else {
+                    None
+                };
+                match ov {
+                    None => {
+                        self.mix_track_items(
+                            out, n, sec_idx, ti, sec_idx, ti, base_pos, step, vol, pan, tg, pg,
+                            None,
+                        );
                     }
-                    let a_ch = asset.channels as usize;
-                    let data = &asset.data;
-
-                    for f in 0..n {
-                        let pos_f = base_pos + step * f as f64;
-                        let rel = pos_f - item.start;
-                        if rel < 0.0 || rel >= item.length {
-                            continue;
-                        }
-                        // Item fades (in beats originally, here samples).
-                        let mut g = item.gain;
-                        if item.fade_in > 0.0 && rel < item.fade_in {
-                            g *= (rel / item.fade_in) as f32;
-                        }
-                        if item.fade_out > 0.0 && (item.length - rel) < item.fade_out {
-                            g *= ((item.length - rel) / item.fade_out) as f32;
-                        }
-                        let src = (item.offset + rel) * asset_ratio;
-                        if src < 0.0 {
-                            continue;
-                        }
-                        let i0 = src as usize;
-                        if i0 + 1 >= a_frames {
-                            continue;
-                        }
-                        let frac = (src - i0 as f64) as f32;
-                        let (mut l, mut r);
-                        if a_ch == 1 {
-                            let s = data[i0] + (data[i0 + 1] - data[i0]) * frac;
-                            l = s * pan_l;
-                            r = s * pan_r;
-                        } else {
-                            let l0 = data[i0 * 2];
-                            let l1 = data[i0 * 2 + 2];
-                            let r0 = data[i0 * 2 + 1];
-                            let r1 = data[i0 * 2 + 3];
-                            l = (l0 + (l1 - l0) * frac) * bal_l;
-                            r = (r0 + (r1 - r0) * frac) * bal_r;
-                        }
-                        let pg = self.players[pi].fade.at(f);
-                        let total = g * vol * tg.at(f) * pg;
-                        l *= total;
-                        r *= total;
-                        if out_ch == 1 {
-                            out[f] += (l + r) * 0.5;
-                        } else {
-                            out[f * 2] += l;
-                            out[f * 2 + 1] += r;
+                    Some(o) => {
+                        // Incoming source at the crossfade weight...
+                        let (cs, ct) = o.src.unwrap_or((sec_idx, ti));
+                        self.mix_track_items(
+                            out,
+                            n,
+                            cs,
+                            ct,
+                            sec_idx,
+                            ti,
+                            base_pos,
+                            step,
+                            vol,
+                            pan,
+                            tg,
+                            pg,
+                            Some((o.fade, false)),
+                        );
+                        // ...plus the outgoing source at the complement while
+                        // the crossfade is still running.
+                        if o.fade.value != o.fade.target {
+                            let (ps, pt) = o.prev.unwrap_or((sec_idx, ti));
+                            self.mix_track_items(
+                                out,
+                                n,
+                                ps,
+                                pt,
+                                sec_idx,
+                                ti,
+                                base_pos,
+                                step,
+                                vol,
+                                pan,
+                                tg,
+                                pg,
+                                Some((o.fade, true)),
+                            );
                         }
                     }
                 }

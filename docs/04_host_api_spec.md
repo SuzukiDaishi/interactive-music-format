@@ -39,6 +39,8 @@ void     iam_set_seed(uint32_t seed);              // 乱数シード（分岐�
 uint32_t iam_get_section(void);                    // 現 Section ID（なし=0xFFFFFFFF）
 float    iam_get_position_beats(void);
 double   iam_get_position_samples(void);           // バンクサンプル単位
+float    iam_get_bpm(void);                        // 実効 BPM（非再生時はプロジェクト値）(v3)
+float    iam_get_beats_per_bar(void);              // 現セクションの拍/小節 (v3)
 
 // イベント
 uint32_t iam_poll_event(uint8_t* out16);           // 1=イベントあり（16バイト書込）, 0=空
@@ -74,6 +76,8 @@ struct IamEvent { uint32_t type; uint32_t a; uint32_t b; float c; };
 | 6 | looped | Section ID | — | — |
 | 7 | oneShot | Asset ID | — | — |
 | 8 | rtpcChanged | RTPC ID | — | 新しい値 |
+| 9 | pluginParam (v3) | プラグインインスタンス ID | CLAP param ID | 値 — JS ホストが rack へ適用 |
+| 10 | trackGoto (v3) | 対象 Track ID | ソース Section ID（解除=NONE） | ソース Track ID |
 
 キュー長は 256。溢れた場合は新しいイベントが破棄される。
 ホストは `iam_process` 呼び出し後に空になるまでポーリングすること。
@@ -88,8 +92,9 @@ struct IamMidi { uint32_t instance; uint32_t frame_offset;
                  float velocity; };
 ```
 
-- `instance`: ルーティング先プラグインインスタンス id（`NONE_ID` = 全インストゥルメントへ
-  All-Notes-Off broadcast）。
+- `instance`: ルーティング先プラグインインスタンス id。AllNotesOff では
+  `NONE_ID` = 全インストゥルメントへ broadcast、それ以外はそのインスタンスのみ
+  （v3: トラック単位遷移の切替時に対象楽器だけ消音する）。
 - `frame_offset`: 当該 `iam_process` ブロック先頭からのサンプル位置。
 - `status`: 0=NoteOff, 1=NoteOn, 2=AllNotesOff。
 

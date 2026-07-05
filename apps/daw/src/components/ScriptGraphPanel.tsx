@@ -54,6 +54,7 @@ const PALETTE: Palette[] = [
       ['positionBeats', 'Position (beats)'],
       ['random', 'Random 0..1'],
       ['math', 'Math (+−×÷)'],
+      ['expr', 'Expression (text)'],
     ],
   },
   {
@@ -104,6 +105,8 @@ function defaultData(kind: GraphNodeKind, s = store): Record<string, unknown> {
       return { name: 'my_cue' };
     case 'constant':
       return { value: 0.5 };
+    case 'expr':
+      return { source: 'intensity >= 0.5' };
     case 'sectionRef':
       return { section };
     case 'math':
@@ -595,6 +598,18 @@ function NodeBody({ n }: { n: GraphNode }) {
       );
     case 'constant':
       return <NumField n={n} k="value" label="value" step={0.1} />;
+    case 'expr':
+      return (
+        <label className="gfield">
+          expr
+          <input
+            className="nodrag expr-input"
+            placeholder="intensity >= 0.5"
+            value={String(n.data.source ?? '')}
+            onChange={(e) => upd(n, 'source', e.target.value)}
+          />
+        </label>
+      );
     case 'sectionRef':
       return <SectionSel n={n} k="section" />;
     case 'currentSection':

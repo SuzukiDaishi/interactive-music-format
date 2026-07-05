@@ -121,7 +121,10 @@ export class IamPlayer {
         plugins = resolved.plugins;
         routing = resolved.routing;
       }
-    } catch {
+    } catch (e) {
+      // Degrade loudly: PCM keeps playing, but silent synths are a bug users
+      // must be able to diagnose.
+      console.warn('[iam-player] WCLAP plugin resolve failed; instruments disabled:', e);
       plugins = undefined;
     }
 
@@ -200,6 +203,12 @@ export class IamPlayer {
 
   private onMessage(m: { type: string } & Record<string, unknown>) {
     if (m.type === 'ready') {
+      console.debug(
+        `[iam-player] worklet ready: ${m.pluginCount ?? 0} plugin(s), rack size ${m.rackSize ?? 0}`,
+      );
+      if (m.rackError) {
+        console.warn('[iam-player] WCLAP rack failed in the worklet:', m.rackError);
+      }
       this.ready = true;
       this.readyResolve?.();
       return;

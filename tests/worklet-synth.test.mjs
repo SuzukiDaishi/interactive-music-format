@@ -13,15 +13,22 @@ import { IAM_WORKLET_SOURCE, loadWclapBundle } from '@iam/player';
 const SR = 48000;
 const wclapDir = fileURLToPath(new URL('../wclap/', import.meta.url));
 
-/** Pulls makeInstance/buildTrampoline out of the worklet source string. */
+/**
+ * Pulls makeInstance/buildTrampoline out of the worklet source string.
+ * TextEncoder/TextDecoder are shadowed to undefined because Chrome's
+ * AudioWorkletGlobalScope has no Encoding API — the worklet source must never
+ * rely on them (a real-browser silent-instruments bug Node globals would hide).
+ */
 function extractWorkletHost() {
   const factory = new Function(
     'registerProcessor',
     'AudioWorkletProcessor',
     'sampleRate',
+    'TextEncoder',
+    'TextDecoder',
     `${IAM_WORKLET_SOURCE}\nreturn { makeInstance, buildTrampoline };`,
   );
-  return factory(() => {}, class {}, SR);
+  return factory(() => {}, class {}, SR, undefined, undefined);
 }
 
 test('worklet synth host renders audio for note-on (correct CLAP note mapping)', async () => {

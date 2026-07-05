@@ -129,6 +129,11 @@ class GraphCtx {
         return 'beats';
       case 'random':
         return 'rand';
+      case 'expr': {
+        const src = String(n.data.source ?? '').trim();
+        if (!src) throw new GraphError('expression node is empty', this.graph.id, n.id);
+        return `(${src})`;
+      }
       case 'math': {
         const op = String(n.data.op ?? '+');
         if (!['+', '-', '*', '/'].includes(op)) {

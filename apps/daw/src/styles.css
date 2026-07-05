@@ -962,3 +962,153 @@ input[type='number'] {
 .expr {
   width: 130px;
 }
+
+/* --- v3.1: slim right column + live panel --------------------------------- */
+.col.right.slim {
+  flex: 0 0 250px;
+  max-width: 250px;
+}
+.live-panel .panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.meter {
+  flex: 1;
+  height: 8px;
+  background: #1c1e23;
+  border: 1px solid #33363e;
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 60px;
+}
+.meter-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #3ddc84, #e8d44d 70%, #ff6a5e);
+  transition: width 40ms linear;
+}
+.meter-fill.clip {
+  background: #ff5252;
+}
+.live-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.live-row .live-name {
+  width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #b9bfca;
+  font-size: 12px;
+}
+.live-row input[type='range'] {
+  flex: 1;
+  min-width: 0;
+}
+.live-cues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #33363e;
+}
+.live-cues button {
+  font-size: 12px;
+}
+
+/* --- v3.1: routing nodes --------------------------------------------------- */
+.gnode-rtpc .gnode-title { background: #234a38; display: flex; gap: 4px; align-items: center; }
+.gnode-blend .gnode-title { background: #24455c; }
+.gnode-mod .gnode-title { background: #24455c; }
+.gnode-inst .gnode-title { background: #4a3057; }
+.gnode-inst-effect .gnode-title { background: #3c3b2a; }
+.gnode-inst-generator .gnode-title { background: #57472a; }
+.gnode-track .gnode-title { background: #2f3d55; }
+.gnode-track.muted { opacity: 0.55; }
+.gnode-master .gnode-title { background: #50262b; }
+.gnode .badge {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 9px;
+  font-weight: 500;
+}
+.gnode .title-input {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-weight: 600;
+  font-size: 11px;
+  width: 110px;
+}
+.gnode .title-input:focus {
+  outline: 1px solid #6aa2ff;
+  border-radius: 3px;
+}
+.gnode .gfield.live {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px;
+}
+.gnode .wide-range {
+  flex: 1;
+  min-width: 90px;
+}
+.gnode .pair {
+  display: flex;
+  gap: 4px;
+}
+.gnode .pair input {
+  width: 50px;
+}
+.gnode .chain-name {
+  flex: 1;
+  color: #b9bfca;
+  font-size: 10px;
+}
+.gnode .curve-editor {
+  width: 200px;
+  height: 64px;
+  margin: 4px 8px 6px;
+}
+.gnode .expr-input {
+  width: 150px;
+  font-family: ui-monospace, monospace;
+}
+.gnode .mini-btn.on {
+  background: #b3564e;
+  color: #fff;
+}
+.react-flow .port-mod {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #57c1a2;
+  border: 1px solid #1c1e23;
+}
+.react-flow .port-notes {
+  width: 9px;
+  height: 9px;
+  background: #c68be0;
+  border-radius: 2px;
+  border: 1px solid #1c1e23;
+}
+.react-flow .port-audio {
+  width: 9px;
+  height: 9px;
+  background: #7ba7e8;
+  border: 1px solid #1c1e23;
+}
+.react-flow .edge-mod path { stroke: #57c1a2; stroke-width: 1.6; }
+.react-flow .edge-notes path { stroke: #c68be0; stroke-width: 1.6; }
+.react-flow .edge-audio path { stroke: #7ba7e8; stroke-width: 1.6; }
+.hint-inline {
+  color: #767c88;
+  font-size: 11px;
+}

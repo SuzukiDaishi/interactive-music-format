@@ -33,10 +33,17 @@ npm run dev        # Web DAW (IAM Studio) を起動 → http://localhost:5173
 ```
 
 DAW は初回起動時に合成音のデモプロジェクト（Adventure Demo）を読み込みます。
-**▶ Build & Play** で試聴し、右の RTPC スライダ（intensity / is_battle / weather）を動かすと
-音楽がリアルタイムに遷移します（intensity は縦ブレンドで Explore のシンセリードを
-連続フェード）。**Script Graph** タブでノードベースのロジック編集、
-**swap_drums / restore_drums** Cue でドラムだけのトラック遷移も試せます。
+エディタは 3 つのノードベースビューで構成されます:
+
+- **Arrange** — セクション / トラック / クリップのタイムライン
+- **Routing** — RTPC・ブレンド曲線・WebCLAP プラグイン・パラメータ変調・
+  MIDI ルーティングを 1 枚のパッチキャンバスでケーブル配線
+- **Logic** — トリガ → 条件 → アクションのスクリプトグラフ
+  （読み込んだ既存 Cue は自動でグラフへ移行されます）
+
+**▶ Build & Play** で試聴し、右の **Live Control**（RTPC スライダ / 手動 Cue ボタン /
+出力メーター）でゲーム側を模擬操作: intensity で縦ブレンドが連続フェードし、
+**⚡swap_drums / ⚡restore_drums** でドラムだけのトラック遷移が試せます。
 **Export .iam.wasm** で単一ファイルに書き出せます。
 
 ```bash

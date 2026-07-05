@@ -57,7 +57,10 @@ worklet 内でも動く最小 CLAP ホスト。`module.wasm` は `clap_entry`（
 
 `WclapRack`（`wclap/rack.ts`）が楽器インスタンスの総和とエフェクト鎖／マスター
 エフェクトのミックスを担う。`worklet.ts` には同等の実装をインライン展開している
-（AudioWorklet はモジュール import 不可のため）。プラグイン初期化や process が例外を
+（AudioWorklet はモジュール import 不可のため）。**AudioWorkletGlobalScope には
+Encoding API（TextEncoder/TextDecoder）が存在しない**ため、インライン版は
+文字列を手書きの UTF-8 エンコーダで扱う（Node のテストは worklet 抽出時に
+TextEncoder を遮蔽してこの制約を再現する）。プラグイン初期化や process が例外を
 投げた場合は rack を無効化し、エンジン PCM のみにフォールバックする。
 
 ## 4. MIDI（instrument）トラック

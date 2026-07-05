@@ -22,16 +22,18 @@ export const IAM_PROCESSOR_NAME = 'iam-player-processor';
 
 export const IAM_WORKLET_SOURCE = `
 // --- inline WCLAP/CLAP host -------------------------------------------------
+// NOTE: AudioWorkletGlobalScope has no TextEncoder/TextDecoder (Encoding API),
+// so strings are UTF-8 encoded by hand here.
+function utf8(s){const o=[];for(let i=0;i<s.length;i++){const c=s.codePointAt(i);if(c>0xffff)i++;if(c<0x80)o.push(c);else if(c<0x800)o.push(0xc0|(c>>6),0x80|(c&63));else if(c<0x10000)o.push(0xe0|(c>>12),0x80|((c>>6)&63),0x80|(c&63));else o.push(0xf0|(c>>18),0x80|((c>>12)&63),0x80|((c>>6)&63),0x80|(c&63));}return o;}
 function uleb(n){const o=[];do{let b=n&0x7f;n>>>=7;if(n)b|=0x80;o.push(b);}while(n);return o;}
 function buildTrampoline(){
   const types=[[[0x7f,0x7f],[0x7f]],[[0x7f],[]],[[0x7f],[0x7f]]];
   const fns=[['get_extension',0],['req_restart',1],['req_process',1],['req_callback',1],['inev_size',2],['inev_get',0],['outev_push',0]];
-  const enc=new TextEncoder();
   const sec=(id,p)=>[id,...uleb(p.length),...p];
   let t=[...uleb(types.length)];for(const[p,r]of types){t.push(0x60,...uleb(p.length),...p,...uleb(r.length),...r);}
-  let im=[...uleb(fns.length)];for(const[n,ti]of fns){const m=enc.encode('h'),nm=enc.encode(n);im.push(...uleb(m.length),...m,...uleb(nm.length),...nm,0,...uleb(ti));}
+  let im=[...uleb(fns.length)];for(const[n,ti]of fns){const m=utf8('h'),nm=utf8(n);im.push(...uleb(m.length),...m,...uleb(nm.length),...nm,0,...uleb(ti));}
   let fn=[...uleb(fns.length)];for(const[,ti]of fns)fn.push(...uleb(ti));
-  let ex=[...uleb(fns.length)];for(let i=0;i<fns.length;i++){const nm=enc.encode('t_'+fns[i][0]);ex.push(...uleb(nm.length),...nm,0,...uleb(fns.length+i));}
+  let ex=[...uleb(fns.length)];for(let i=0;i<fns.length;i++){const nm=utf8('t_'+fns[i][0]);ex.push(...uleb(nm.length),...nm,0,...uleb(fns.length+i));}
   let cd=[...uleb(fns.length)];for(let i=0;i<fns.length;i++){const np=types[fns[i][1]][0].length;let b=[0];for(let p=0;p<np;p++)b.push(0x20,...uleb(p));b.push(0x10,...uleb(i),0x0b);cd.push(...uleb(b.length),...b);}
   return new WebAssembly.Module(new Uint8Array([0,0x61,0x73,0x6d,1,0,0,0,...sec(1,t),...sec(2,im),...sec(3,fn),...sec(7,ex),...sec(10,cd)]));
 }
@@ -41,7 +43,7 @@ function makeInstance(module, opts){
   const mem=ex.memory, table=ex.__indirect_function_table;
   const dv=()=>new DataView(mem.buffer);
   const malloc=(n)=>ex.malloc(n);
-  const cstr=(s)=>{const b=new TextEncoder().encode(s);const p=malloc(b.length+1);new Uint8Array(mem.buffer,p,b.length+1).set([...b,0]);return p;};
+  const cstr=(s)=>{const b=utf8(s);const p=malloc(b.length+1);new Uint8Array(mem.buffer,p,b.length+1).set([...b,0]);return p;};
   let inEventPtrs=[]; let events=[]; const activeNotes=new Set(); let outNotes=[];
   // outev_push copies note events out of plugin memory immediately (the
   // pointer is only valid inside the callback); other events are dropped.
@@ -155,10 +157,21 @@ class IamProcessor extends AudioWorkletProcessor {
       this.eventPtr = ex.iam_alloc(16);
       this.midiPtr = ex.iam_alloc(16);
       this.ex = ex;
+      let rackError = null;
       if (plugins && plugins.length && ex.iam_poll_midi) {
-        try { this.buildRack(plugins, routing); } catch (e) { this.rack = null; }
+        try { this.buildRack(plugins, routing); } catch (e) {
+          this.rack = null;
+          rackError = String(e && (e.stack || e.message) || e);
+        }
+      } else if (plugins && plugins.length) {
+        rackError = 'engine lacks iam_poll_midi';
       }
-      this.port.postMessage({ type: 'ready' });
+      this.port.postMessage({
+        type: 'ready',
+        rackSize: this.rack ? this.rack.map.size : 0,
+        pluginCount: plugins ? plugins.length : 0,
+        rackError,
+      });
     } catch (err) {
       this.port.postMessage({ type: 'error', message: String(err && err.message || err) });
     }
@@ -320,6 +333,7 @@ class IamProcessor extends AudioWorkletProcessor {
         for (let i = 0; i < frames; i++) { l[i] = L[i]; if (out.length > 1) r[i] = R[i]; }
       } catch (e) {
         this.rack = null; // disable rack on error, fall back to PCM
+        console.warn('[iam-worklet] rack processing failed; instruments disabled:', e && e.message || e);
         for (let i = 0; i < frames; i++) { l[i] = buf[i * 2]; if (out.length > 1) r[i] = buf[i * 2 + 1]; }
       }
     } else {

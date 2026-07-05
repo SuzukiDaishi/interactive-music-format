@@ -313,6 +313,8 @@ export type GraphNodeKind =
   | 'positionBeats'
   | 'random'
   | 'math'
+  /** Raw expression text (docs/03 language) — escape hatch & cue migration. */
+  | 'expr'
   // Logic
   | 'compare'
   | 'and'

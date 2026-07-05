@@ -47,6 +47,25 @@ export function planRack(project: IamProject): RackPlan | null {
   const masterEffects = (project.masterEffects ?? []).filter((id) => instancesById.has(id));
   masterEffects.forEach((id) => used.add(id));
 
+  // Note-generator routings (v3): both ends are audio-input-less plugins. A
+  // target that no track references directly is added to the instrument sum so
+  // its (note-driven) audio is heard.
+  const noteSources = (project.noteSources ?? []).filter(
+    (s) => instancesById.has(s.generator) && instancesById.has(s.target),
+  );
+  for (const s of noteSources) {
+    instrumentIds.add(s.generator);
+    instrumentIds.add(s.target);
+    used.add(s.generator);
+    used.add(s.target);
+    if (!instruments.some((i) => i.instanceId === s.target)) {
+      instruments.push({ instanceId: s.target, effects: [] });
+    }
+  }
+
+  // RTPC -> parameter modulations (v3), kept only for instances in the graph.
+  const paramMods = (project.paramMods ?? []).filter((m) => used.has(m.instance));
+
   if (used.size === 0) return null;
 
   const instancePlans: RackInstancePlan[] = [];
@@ -62,5 +81,8 @@ export function planRack(project: IamProject): RackPlan | null {
     });
   }
 
-  return { instances: instancePlans, routing: { instruments, masterEffects } };
+  return {
+    instances: instancePlans,
+    routing: { instruments, masterEffects, noteSources, paramMods },
+  };
 }

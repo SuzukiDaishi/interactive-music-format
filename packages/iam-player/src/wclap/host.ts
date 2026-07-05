@@ -14,8 +14,35 @@
 const EVENT_NOTE_ON = 0;
 const EVENT_NOTE_OFF = 1;
 const EVENT_PARAM_VALUE = 5;
+const EVENT_TRANSPORT = 9;
 const SIZE_NOTE = 40;
 const SIZE_PARAM = 48;
+/** sizeof(clap_event_transport): 16-byte header + fields. */
+const SIZE_TRANSPORT = 104;
+/** CLAP fixed-point beat/seconds factor (1 << 31). */
+const BEATTIME_FACTOR = 0x80000000;
+// clap_event_transport.flags
+const TRANSPORT_HAS_TEMPO = 1 << 0;
+const TRANSPORT_HAS_BEATS = 1 << 1;
+const TRANSPORT_HAS_TSIG = 1 << 3;
+const TRANSPORT_IS_PLAYING = 1 << 4;
+
+/** A note event captured from a plugin's CLAP output queue (generators). */
+export interface WclapOutputNote {
+  time: number;
+  isOn: boolean;
+  key: number;
+  channel: number;
+  velocity: number;
+}
+
+/** Musical clock snapshot fed to plugins as a CLAP transport event. */
+export interface WclapTransport {
+  bpm: number;
+  posBeats: number;
+  beatsPerBar: number;
+  playing: boolean;
+}
 
 // clap_plugin struct member offsets (function-pointer table indices).
 const PL_INIT = 8;
@@ -129,11 +156,14 @@ export class WclapInstance {
   private inPtrs!: { l: number; r: number };
   private outPtrs!: { l: number; r: number };
   private procPtr = 0;
+  private transportPtr = 0;
   private frames: number;
   private evIdx = { size: 0, get: 0, push: 0 };
   private evPool = 0;
+  private outNotes: WclapOutputNote[] = [];
   private static readonly EV_POOL = 512;
   private static readonly EV_STRIDE = 48;
+  private static readonly MAX_OUT_NOTES = 256;
   readonly audioInputs: 0 | 1;
 
   constructor(module: WebAssembly.Module, opts: WclapInstanceOptions) {
@@ -171,7 +201,33 @@ export class WclapInstance {
         req_callback: () => {},
         inev_size: () => this.inEventPtrs.length,
         inev_get: (_ctx: number, i: number) => this.inEventPtrs[i] ?? 0,
-        outev_push: () => 1,
+        // Copy note events out of plugin memory immediately — the pointer is
+        // only valid for the duration of the callback. Non-note events are
+        // acknowledged and dropped.
+        outev_push: (_ctx: number, evPtr: number) => {
+          try {
+            const d = this.dv();
+            if (evPtr <= 0 || evPtr + 12 > d.byteLength) return 0;
+            const size = d.getUint32(evPtr, true);
+            if (size < 12 || size > 64 || evPtr + size > d.byteLength) return 0;
+            const space = d.getUint16(evPtr + 8, true);
+            const type = d.getUint16(evPtr + 10, true);
+            if (space === 0 && (type === EVENT_NOTE_ON || type === EVENT_NOTE_OFF)) {
+              if (size >= SIZE_NOTE && this.outNotes.length < WclapInstance.MAX_OUT_NOTES) {
+                this.outNotes.push({
+                  time: d.getUint32(evPtr + 4, true),
+                  isOn: type === EVENT_NOTE_ON,
+                  key: d.getInt16(evPtr + 24, true),
+                  channel: Math.max(0, d.getInt16(evPtr + 22, true)),
+                  velocity: d.getFloat64(evPtr + 32, true),
+                });
+              }
+            }
+            return 1;
+          } catch {
+            return 0;
+          }
+        },
       },
     };
     const tramp = new WebAssembly.Instance(opts.trampoline, imports).exports as Record<string, any>;
@@ -283,8 +339,17 @@ export class WclapInstance {
     d.setUint32(outEv + 4, this.evIdx.push, true);
 
     this.evPool = this.malloc(WclapInstance.EV_POOL * WclapInstance.EV_STRIDE);
+    // clap_event_transport, pointed to by clap_process.transport. The header
+    // is written once; setTransport refreshes tempo/position per block. Flags
+    // stay 0 (no info) until setTransport is called.
+    this.transportPtr = this.malloc(SIZE_TRANSPORT + 8);
+    new Uint8Array(this.mem.buffer, this.transportPtr, SIZE_TRANSPORT).fill(0);
+    d.setUint32(this.transportPtr + 0, SIZE_TRANSPORT, true);
+    d.setUint16(this.transportPtr + 8, 0, true); // CLAP core event space
+    d.setUint16(this.transportPtr + 10, EVENT_TRANSPORT, true);
     this.procPtr = this.malloc(64);
     d.setUint32(this.procPtr + 8, N, true); // frames_count (rewritten each block)
+    d.setUint32(this.procPtr + 12, this.transportPtr, true);
     d.setUint32(this.procPtr + 16, this.audioInputs ? audioIn : 0, true);
     d.setUint32(this.procPtr + 20, audioOut, true);
     d.setUint32(this.procPtr + 24, this.audioInputs, true);
@@ -329,6 +394,38 @@ export class WclapInstance {
 
   allNotesOff(time: number) {
     for (const k of [...this.active]) this.noteOff(k & 0xff, (k >> 8) & 0xff, time);
+  }
+
+  /**
+   * Refreshes the CLAP transport event read by the plugin during process().
+   * Generators use this to stay musical (tempo, bar position, play state).
+   */
+  setTransport(t: WclapTransport) {
+    const d = this.dv();
+    const p = this.transportPtr;
+    const flags =
+      TRANSPORT_HAS_TEMPO |
+      TRANSPORT_HAS_BEATS |
+      TRANSPORT_HAS_TSIG |
+      (t.playing ? TRANSPORT_IS_PLAYING : 0);
+    d.setUint32(p + 16, flags, true);
+    d.setBigInt64(p + 24, BigInt(Math.round(t.posBeats * BEATTIME_FACTOR)), true);
+    d.setFloat64(p + 40, t.bpm, true);
+    const beatsPerBar = t.beatsPerBar > 0 ? t.beatsPerBar : 4;
+    const barStart = Math.floor(t.posBeats / beatsPerBar) * beatsPerBar;
+    d.setBigInt64(p + 88, BigInt(Math.round(barStart * BEATTIME_FACTOR)), true);
+    d.setInt32(p + 96, Math.floor(t.posBeats / beatsPerBar), true);
+    d.setUint16(p + 100, Math.round(beatsPerBar), true);
+    d.setUint16(p + 102, 4, true);
+  }
+
+  /** Returns and clears the note events captured from the plugin's output
+   *  queue during the last process() call. */
+  takeOutputNotes(): WclapOutputNote[] {
+    if (this.outNotes.length === 0) return [];
+    const out = this.outNotes;
+    this.outNotes = [];
+    return out;
   }
 
   setParam(id: number, value: number, time: number) {

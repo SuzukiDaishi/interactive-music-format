@@ -1,7 +1,48 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore, store } from '../store';
 import { usePreview, preview } from '../preview';
+import { smfToNotes } from '@iam/pack';
 import type { Item, MidiNote, Track } from '@iam/pack';
+
+/** ".mid import" button for instrument tracks (SMF format 0/1, beat-timed). */
+function MidImportButton({ track }: { track: Track }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const importFile = async (f: File) => {
+    try {
+      const notes = smfToNotes(new Uint8Array(await f.arrayBuffer()));
+      if (notes.length === 0) {
+        alert('No notes found in this MIDI file.');
+        return;
+      }
+      const replace =
+        (track.notes?.length ?? 0) === 0 ||
+        confirm(`Replace the ${track.notes!.length} existing notes? (Cancel = append)`);
+      store.update(() => {
+        track.notes = replace ? notes : [...(track.notes ?? []), ...notes];
+      });
+    } catch (e) {
+      alert(`MIDI import failed:\n${e instanceof Error ? e.message : e}`);
+    }
+  };
+  return (
+    <>
+      <button className="mini-btn" title="Import a .mid file into this track" onClick={() => ref.current?.click()}>
+        .mid
+      </button>
+      <input
+        ref={ref}
+        type="file"
+        accept=".mid,.midi,.smf"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) importFile(f);
+          e.target.value = '';
+        }}
+      />
+    </>
+  );
+}
 
 const RULER_H = 28;
 const LANE_H = 64;
@@ -730,6 +771,7 @@ export function Timeline() {
                       </span>
                     );
                   })}
+                  <MidImportButton track={t} />
                 </div>
               )}
             </div>

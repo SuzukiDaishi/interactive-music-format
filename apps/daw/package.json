@@ -11,6 +11,7 @@
   "dependencies": {
     "@iam/pack": "1.0.0",
     "@iam/player": "1.0.0",
+    "@xyflow/react": "^12.11.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

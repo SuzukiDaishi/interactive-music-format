@@ -305,6 +305,184 @@ function MasterSection() {
   );
 }
 
+/**
+ * Note generators (v3): a plugin instance whose CLAP note output drives
+ * another instrument instance — generative music lives in the plugin, the
+ * host just routes it.
+ */
+function NoteSourceSection() {
+  const s = useStore();
+  const sources = s.project.noteSources ?? [];
+  const instName = (id: number) => {
+    const inst = s.project.pluginInstances.find((i) => i.id === id);
+    const bank = inst && s.project.plugins.find((p) => p.id === inst.pluginBankId);
+    return `${bank?.name ?? '?'} #${id}`;
+  };
+
+  const add = () => {
+    store.update((st) => {
+      const insts = st.project.pluginInstances;
+      if (insts.length < 2) {
+        alert('Note routing needs two plugin instances (a generator and a target synth).');
+        return;
+      }
+      st.project.noteSources ??= [];
+      st.project.noteSources.push({ generator: insts[0].id, target: insts[1].id });
+    });
+  };
+
+  return (
+    <div className="plugin-group">
+      <div className="panel-subhead">
+        <span title="Generative WCLAP: the generator's CLAP note output plays the target instrument (its own audio is discarded)">
+          Note generators
+        </span>
+        <button onClick={add}>＋ route</button>
+      </div>
+      {sources.map((ns, i) => (
+        <div key={i} className="master-row">
+          <select
+            value={ns.generator}
+            title="Generator instance (note output captured)"
+            onChange={(e) => store.update(() => (ns.generator = Number(e.target.value)))}
+          >
+            {s.project.pluginInstances.map((inst) => (
+              <option key={inst.id} value={inst.id}>
+                {instName(inst.id)}
+              </option>
+            ))}
+          </select>
+          <span className="dim">♪→</span>
+          <select
+            value={ns.target}
+            title="Target instrument playing the generated notes"
+            onChange={(e) => store.update(() => (ns.target = Number(e.target.value)))}
+          >
+            {s.project.pluginInstances.map((inst) => (
+              <option key={inst.id} value={inst.id}>
+                {instName(inst.id)}
+              </option>
+            ))}
+          </select>
+          <button
+            className="remove"
+            onClick={() => store.update((st) => st.project.noteSources!.splice(i, 1))}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      {sources.length === 0 && (
+        <div className="hint">
+          Route a generator plugin's MIDI output into a synth instance — generative music driven by
+          the plugin (and by RTPCs via param modulation below).
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** RTPC -> CLAP parameter modulation (v3): game state drives plugin params. */
+function ParamModSection() {
+  const s = useStore();
+  const mods = s.project.paramMods ?? [];
+  const instName = (id: number) => {
+    const inst = s.project.pluginInstances.find((i) => i.id === id);
+    const bank = inst && s.project.plugins.find((p) => p.id === inst.pluginBankId);
+    return `${bank?.name ?? '?'} #${id}`;
+  };
+
+  const add = () => {
+    store.update((st) => {
+      const inst = st.project.pluginInstances[0];
+      const rtpc = st.project.rtpcs[0];
+      if (!inst || !rtpc) {
+        alert('Param modulation needs a plugin instance and an RTPC.');
+        return;
+      }
+      st.project.paramMods ??= [];
+      st.project.paramMods.push({
+        instance: inst.id,
+        param: 0,
+        rtpc: rtpc.id,
+        points: [
+          { x: rtpc.min, y: 0 },
+          { x: rtpc.max, y: 1 },
+        ],
+      });
+    });
+  };
+
+  return (
+    <div className="plugin-group">
+      <div className="panel-subhead">
+        <span title="Map an RTPC to a CLAP parameter with a curve, applied live every block">
+          Param modulation
+        </span>
+        <button onClick={add}>＋ mod</button>
+      </div>
+      {mods.map((m, i) => (
+        <div key={i} className="master-row">
+          <select
+            value={m.rtpc}
+            title="Driving RTPC"
+            onChange={(e) => store.update(() => (m.rtpc = Number(e.target.value)))}
+          >
+            {s.project.rtpcs.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+          <span className="dim">→</span>
+          <select
+            value={m.instance}
+            onChange={(e) => store.update(() => (m.instance = Number(e.target.value)))}
+          >
+            {s.project.pluginInstances.map((inst) => (
+              <option key={inst.id} value={inst.id}>
+                {instName(inst.id)}
+              </option>
+            ))}
+          </select>
+          <input
+            className="num"
+            type="number"
+            title="CLAP param id"
+            value={m.param}
+            onChange={(e) => store.update(() => (m.param = Number(e.target.value) || 0))}
+          />
+          <input
+            className="num"
+            type="number"
+            step={0.05}
+            title="value at RTPC min"
+            value={m.points[0]?.y ?? 0}
+            onChange={(e) => store.update(() => (m.points[0].y = Number(e.target.value) || 0))}
+          />
+          <span className="dim">..</span>
+          <input
+            className="num"
+            type="number"
+            step={0.05}
+            title="value at RTPC max"
+            value={m.points[m.points.length - 1]?.y ?? 1}
+            onChange={(e) =>
+              store.update(() => (m.points[m.points.length - 1].y = Number(e.target.value) || 0))
+            }
+          />
+          <button
+            className="remove"
+            onClick={() => store.update((st) => st.project.paramMods!.splice(i, 1))}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function PluginPanel() {
   return (
     <div className="panel plugins">
@@ -316,6 +494,8 @@ export function PluginPanel() {
       <div className="panel-body">
         <BankSection />
         <InstanceSection />
+        <NoteSourceSection />
+        <ParamModSection />
         <MasterSection />
       </div>
     </div>

@@ -6,6 +6,8 @@ import { Timeline } from './components/Timeline';
 import { RtpcPanel } from './components/RtpcPanel';
 import { CuePanel } from './components/CuePanel';
 import { PluginPanel } from './components/PluginPanel';
+import { BlendPanel } from './components/BlendPanel';
+import { ScriptGraphPanel } from './components/ScriptGraphPanel';
 import { EventLog } from './components/EventLog';
 import { store, useStore } from './store';
 import { loadDemoProject } from './demo';
@@ -55,7 +57,24 @@ export function App() {
           <AssetPanel />
         </div>
         <div className="col center">
-          {s.selectedSection ? (
+          <div className="center-tabs">
+            <button
+              className={s.centerView === 'timeline' ? 'tab active' : 'tab'}
+              onClick={() => store.touch((st) => (st.centerView = 'timeline'))}
+            >
+              Timeline
+            </button>
+            <button
+              className={s.centerView === 'graph' ? 'tab active' : 'tab'}
+              onClick={() => store.touch((st) => (st.centerView = 'graph'))}
+              title="Visual scripting: triggers → logic → actions"
+            >
+              Script Graph
+            </button>
+          </div>
+          {s.centerView === 'graph' ? (
+            <ScriptGraphPanel />
+          ) : s.selectedSection ? (
             <Timeline key={s.selectedSection.id} />
           ) : (
             <div className="placeholder">Add or select a section to edit its timeline</div>
@@ -63,6 +82,7 @@ export function App() {
         </div>
         <div className="col right">
           <RtpcPanel />
+          <BlendPanel />
           <PluginPanel />
           <CuePanel />
           <EventLog />

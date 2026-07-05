@@ -38,6 +38,8 @@ class DawStore {
   selectedCueId: number | null = null;
   selectedAssetId: number | null = null;
   selection: Selection = { kind: 'none' };
+  /** Center column view: arrangement timeline or the script graph editor. */
+  centerView: 'timeline' | 'graph' = 'timeline';
   /** Increments on every mutation. */
   version = 0;
   /** True when edits were made since the last preview build. */

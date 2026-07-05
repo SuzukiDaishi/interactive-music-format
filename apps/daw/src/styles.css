@@ -757,3 +757,208 @@ input[type='number'] {
   font-size: 10px;
   padding: 1px 5px;
 }
+
+/* --- v3: center view tabs ------------------------------------------------ */
+.center-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px 0;
+}
+.center-tabs .tab {
+  background: #23252b;
+  border: 1px solid #33363e;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: #9aa0ab;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+.center-tabs .tab.active {
+  background: #2c2f36;
+  color: #e6e8ec;
+}
+
+/* --- v3: blend panel ------------------------------------------------------ */
+.blend-row {
+  border: 1px solid #33363e;
+  border-radius: 6px;
+  padding: 6px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.blend-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.blend-controls select {
+  max-width: 110px;
+}
+.curve-editor {
+  width: 100%;
+  height: 72px;
+  cursor: crosshair;
+  touch-action: none;
+}
+.curve-bg {
+  fill: #1c1e23;
+  stroke: #33363e;
+}
+.curve-unity {
+  stroke: #3c404a;
+  stroke-dasharray: 3 3;
+}
+.curve-line {
+  fill: none;
+  stroke: #6aa2ff;
+  stroke-width: 1.5;
+}
+.curve-point {
+  fill: #6aa2ff;
+  stroke: #dfe6f5;
+  stroke-width: 1;
+  cursor: grab;
+}
+.curve-point.dragging {
+  cursor: grabbing;
+  fill: #9cc0ff;
+}
+
+/* --- v3: script graph ------------------------------------------------------ */
+.graph-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #2c2f36;
+  border-radius: 0 6px 6px 6px;
+  margin: 0 8px 8px;
+  overflow: hidden;
+}
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #33363e;
+  flex-wrap: wrap;
+}
+.graph-toolbar .graph-name {
+  width: 130px;
+}
+.graph-toolbar .spacer {
+  flex: 1;
+}
+.graph-canvas {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+.graph-compiled {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 300px;
+  max-height: 70%;
+  overflow: auto;
+  background: rgba(24, 26, 30, 0.95);
+  border: 1px solid #3c404a;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+  z-index: 5;
+}
+.graph-compiled .error {
+  color: #ff8484;
+  white-space: pre-wrap;
+}
+.compiled-cue {
+  margin-bottom: 6px;
+}
+.compiled-rule {
+  margin-left: 8px;
+  color: #b9bfca;
+}
+.compiled-rule code {
+  color: #8fd0a0;
+}
+.gnode {
+  background: #23252b;
+  border: 1px solid #454a55;
+  border-radius: 8px;
+  min-width: 150px;
+  max-width: 220px;
+  font-size: 11px;
+  color: #dfe3ea;
+}
+.gnode-title {
+  padding: 4px 8px;
+  border-bottom: 1px solid #33363e;
+  border-radius: 8px 8px 0 0;
+  font-weight: 600;
+}
+.gnode-trigger .gnode-title { background: #4a3057; }
+.gnode-value .gnode-title { background: #234a38; }
+.gnode-logic .gnode-title { background: #23414a; }
+.gnode-branch .gnode-title { background: #23414a; }
+.gnode-action .gnode-title { background: #503a26; }
+.gnode .gfield {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 8px;
+  color: #9aa0ab;
+}
+.gnode .gfield select,
+.gnode .gfield input[type='number'],
+.gnode .gfield input:not([type]) {
+  width: 105px;
+  background: #1c1e23;
+  color: #e6e8ec;
+  border: 1px solid #3c404a;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 1px 4px;
+}
+.gnode .gfield-row {
+  display: flex;
+  gap: 4px;
+  padding: 2px 8px;
+}
+.gnode .gfield-row .weight {
+  width: 44px;
+}
+.gnode .dim {
+  color: #767c88;
+}
+.react-flow .port-exec {
+  width: 10px;
+  height: 10px;
+  background: #e0a24a;
+  border: 1px solid #1c1e23;
+}
+.react-flow .port-value {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6aa2ff;
+  border: 1px solid #1c1e23;
+}
+.react-flow .edge-exec path {
+  stroke: #e0a24a;
+  stroke-width: 2;
+}
+.react-flow .edge-value path {
+  stroke: #6aa2ff;
+}
+.gnode button {
+  font-size: 10px;
+  margin: 2px 8px;
+}
+.expr {
+  width: 130px;
+}

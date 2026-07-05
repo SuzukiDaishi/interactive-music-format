@@ -105,6 +105,25 @@ function defaultAction(type: CueAction['type']): CueAction {
         track: store.project.sections[0]?.tracks[0]?.id ?? 0,
         gain: 1,
         fadeMs: 300,
+        timing: 'immediate',
+      };
+    case 'gotoTrack':
+      return {
+        type,
+        section: firstSection,
+        track: store.project.sections[0]?.tracks[0]?.id ?? 0,
+        sourceSection: null,
+        sourceTrack: null,
+        timing: 'nextBar',
+        transition: 'crossfade',
+        fadeMs: 150,
+      };
+    case 'setPluginParam':
+      return {
+        type,
+        instance: store.project.pluginInstances[0]?.id ?? 0,
+        param: 0,
+        value: 0,
       };
     case 'setLoop':
       return { type, section: firstSection, enabled: false };
@@ -259,6 +278,121 @@ function ActionEditor({ action, onRemove }: { action: CueAction; onRemove: () =>
             value={action.fadeMs}
             onChange={(e) => u(() => (action.fadeMs = Number(e.target.value) || 0))}
           />
+          <TimingSelect
+            value={action.timing ?? 'immediate'}
+            onChange={(v) => u(() => (action.timing = v))}
+          />
+          <input
+            className="expr"
+            placeholder="gain expr (optional)"
+            title="Value expression evaluated at fire time, e.g. intensity * 0.5 (overrides the gain field)"
+            value={action.gainExpr ?? ''}
+            onChange={(e) => u(() => (action.gainExpr = e.target.value || undefined))}
+          />
+        </>
+      )}
+      {action.type === 'gotoTrack' && (
+        <>
+          <SectionSelect value={action.section} onChange={(v) => u(() => (action.section = v ?? 0))} />
+          <select
+            title="Track slot to retarget"
+            value={action.track}
+            onChange={(e) => u(() => (action.track = Number(e.target.value)))}
+          >
+            {(s.project.sections.find((x) => x.id === action.section)?.tracks ?? []).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <span className="dim">⇐</span>
+          <SectionSelect
+            allowNull
+            value={action.sourceSection}
+            onChange={(v) =>
+              u(() => {
+                action.sourceSection = v;
+                if (v !== null) {
+                  const src = s.project.sections.find((x) => x.id === v);
+                  action.sourceTrack = src?.tracks[0]?.id ?? 0;
+                } else {
+                  action.sourceTrack = null;
+                }
+              })
+            }
+          />
+          {action.sourceSection !== null && (
+            <select
+              title="Source track supplying the content"
+              value={action.sourceTrack ?? 0}
+              onChange={(e) => u(() => (action.sourceTrack = Number(e.target.value)))}
+            >
+              {(s.project.sections.find((x) => x.id === action.sourceSection)?.tracks ?? []).map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <TimingSelect value={action.timing} onChange={(v) => u(() => (action.timing = v))} />
+          <select
+            value={action.transition}
+            onChange={(e) => u(() => (action.transition = e.target.value as 'cut' | 'crossfade'))}
+            title="cut / crossfade"
+          >
+            <option value="cut">cut</option>
+            <option value="crossfade">crossfade</option>
+          </select>
+          {action.transition === 'crossfade' && (
+            <input
+              className="num"
+              type="number"
+              min={0}
+              title="fade ms"
+              value={action.fadeMs}
+              onChange={(e) => u(() => (action.fadeMs = Number(e.target.value) || 0))}
+            />
+          )}
+        </>
+      )}
+      {action.type === 'setPluginParam' && (
+        <>
+          <select
+            title="Plugin instance"
+            value={action.instance}
+            onChange={(e) => u(() => (action.instance = Number(e.target.value)))}
+          >
+            {s.project.pluginInstances.map((inst) => {
+              const bank = s.project.plugins.find((p) => p.id === inst.pluginBankId);
+              return (
+                <option key={inst.id} value={inst.id}>
+                  {bank?.name ?? '?'} #{inst.id}
+                </option>
+              );
+            })}
+          </select>
+          <input
+            className="num"
+            type="number"
+            title="CLAP param id"
+            value={action.param}
+            onChange={(e) => u(() => (action.param = Number(e.target.value) || 0))}
+          />
+          <input
+            className="num"
+            type="number"
+            step={0.05}
+            title="value"
+            value={action.value}
+            onChange={(e) => u(() => (action.value = Number(e.target.value) || 0))}
+          />
+          <input
+            className="expr"
+            placeholder="value expr (optional)"
+            title="Value expression evaluated at fire time (overrides the value field)"
+            value={action.valueExpr ?? ''}
+            onChange={(e) => u(() => (action.valueExpr = e.target.value || undefined))}
+          />
         </>
       )}
       {action.type === 'setLoop' && (
@@ -301,6 +435,13 @@ function ActionEditor({ action, onRemove }: { action: CueAction; onRemove: () =>
             step={0.05}
             value={action.value}
             onChange={(e) => u(() => (action.value = Number(e.target.value) || 0))}
+          />
+          <input
+            className="expr"
+            placeholder="value expr (optional)"
+            title="Value expression evaluated at fire time (overrides the value field)"
+            value={action.valueExpr ?? ''}
+            onChange={(e) => u(() => (action.valueExpr = e.target.value || undefined))}
           />
         </>
       )}
@@ -532,6 +673,8 @@ export function CuePanel() {
                       <option value="play">play section</option>
                       <option value="stop">stop</option>
                       <option value="setTrackGain">set track gain</option>
+                      <option value="gotoTrack">goto track (part swap)</option>
+                      <option value="setPluginParam">set plugin param</option>
                       <option value="setLoop">set loop</option>
                       <option value="oneShot">one-shot</option>
                       <option value="setRtpc">set RTPC</option>

@@ -284,6 +284,84 @@ export type CueAction =
     }
   | { type: 'oneShot'; asset: number; gain: number; timing: TimingName };
 
+// ---------------------------------------------------------------------------
+// Script graphs (v3 authoring model)
+// ---------------------------------------------------------------------------
+
+/**
+ * Node kinds of the visual script graph. Trigger nodes start an execution
+ * chain (compiled to a Binding + generated Cue), action nodes emit CueActions
+ * in chain order, value/logic nodes are synthesized into condition/value
+ * expressions (docs/03_cue_vm_spec.md) so the distribution format stays plain
+ * Cue VM bytecode.
+ */
+export type GraphNodeKind =
+  // Triggers (exec output port 'out')
+  | 'onModuleStart'
+  | 'onRtpcChanged'
+  | 'onBar'
+  | 'onBeat'
+  | 'onSectionStart'
+  | 'onSectionEnd'
+  | 'onAnchor'
+  | 'onManualCue'
+  // Values (value output port 'value')
+  | 'rtpcValue'
+  | 'constant'
+  | 'sectionRef'
+  | 'currentSection'
+  | 'positionBeats'
+  | 'random'
+  | 'math'
+  // Logic
+  | 'compare'
+  | 'and'
+  | 'or'
+  | 'not'
+  // Flow (exec in 'in', value in 'cond', exec outs 'then'/'else')
+  | 'branch'
+  // Actions (exec in 'in', exec out 'out'; some take value inputs)
+  | 'goto'
+  | 'gotoRandom'
+  | 'gotoTrack'
+  | 'setTrackGain'
+  | 'setLoop'
+  | 'setRtpc'
+  | 'setPluginParam'
+  | 'emit'
+  | 'stop'
+  | 'oneShot';
+
+export interface GraphNode {
+  id: string;
+  kind: GraphNodeKind;
+  /** Editor canvas position. */
+  x: number;
+  y: number;
+  /** Kind-specific configuration (ids reference project entities). */
+  data: Record<string, unknown>;
+}
+
+export interface GraphEdge {
+  from: string;
+  /** Source port: 'out' | 'then' | 'else' for exec, 'value' for values. */
+  fromPort: string;
+  to: string;
+  /** Target port: 'in' for exec; value port name otherwise (e.g. 'a', 'b',
+   *  'cond', 'value', 'gain'). */
+  toPort: string;
+}
+
+/** A visual script graph, stored in META and compiled at export time. */
+export interface ScriptGraph {
+  id: number;
+  name: string;
+  /** Disabled graphs are kept in META but not compiled. */
+  enabled?: boolean;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export interface CueRule {
   /**
    * Condition expression source (see docs/03_cue_vm_spec.md), e.g.
@@ -349,6 +427,11 @@ export interface IamProject {
   paramMods?: ParamMod[];
   /** Note-generator routings (v3, NSRC chunk). */
   noteSources?: NoteSource[];
+  /**
+   * Visual script graphs (v3). Authoring-only: stored in META and compiled
+   * into generated cues/bindings at export (see graph.ts / compileGraphs).
+   */
+  graphs?: ScriptGraph[];
 }
 
 export type AssetFormat = 'pcm16' | 'f32';
@@ -406,6 +489,7 @@ export function normalizeProject(project: IamProject): IamProject {
   project.blends ??= [];
   project.paramMods ??= [];
   project.noteSources ??= [];
+  project.graphs ??= [];
   for (const s of project.sections) {
     for (const t of s.tracks) {
       t.kind ??= 'audio';

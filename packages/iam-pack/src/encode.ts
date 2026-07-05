@@ -15,6 +15,7 @@ import {
   CueAction,
 } from './model.js';
 import { compileExpression, compileValueExpression } from './expr.js';
+import { projectWithCompiledGraphs } from './graph.js';
 
 class Writer {
   private buf = new Uint8Array(1024);
@@ -494,6 +495,10 @@ export function encodePack(
   options: EncodeOptions = {},
   plugins: EncodePlugin[] = [],
 ): Uint8Array {
+  // Script graphs compile into generated cues/bindings for the binary
+  // chunks; META below keeps the original authoring project (graphs only).
+  const authored = project;
+  project = projectWithCompiledGraphs(project);
   const issues = validateProject(project, assets, plugins);
   if (issues.length > 0) throw new ValidationError(issues);
 
@@ -759,9 +764,11 @@ export function encodePack(
     chunks.push({ id: 'NSRC', body: w.result() });
   }
 
-  // META (project JSON for re-import; the engine skips unknown chunks)
+  // META (project JSON for re-import; the engine skips unknown chunks).
+  // Stores the authored project: graphs stay graphs, generated cues are not
+  // duplicated into it.
   if (includeMeta) {
-    const json = JSON.stringify({ project });
+    const json = JSON.stringify({ project: authored });
     chunks.push({ id: 'META', body: new TextEncoder().encode(json) });
   }
 

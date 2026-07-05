@@ -32,6 +32,8 @@ export interface NamedEvent extends IamEvent {
     | 'looped'
     | 'oneShot'
     | 'rtpcChanged'
+    | 'pluginParam'
+    | 'trackGoto'
     | 'unknown';
   /** Resolved names where applicable (section/cue/rtpc names). */
   fromName?: string | null;
@@ -259,6 +261,10 @@ export class IamPlayer {
           kind: 'rtpcChanged',
           name: this.meta.rtpcs.find((r) => r.id === e.a)?.name ?? null,
         };
+      case EventType.PluginParam:
+        return { ...e, kind: 'pluginParam' };
+      case EventType.TrackGoto:
+        return { ...e, kind: 'trackGoto', toName: this.sectionName(e.b) };
       default:
         return { ...e, kind: 'unknown' };
     }

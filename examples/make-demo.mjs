@@ -20,10 +20,11 @@ const outPath =
 const engine = new Uint8Array(await readFile(path.join(root, 'runtime', 'engine.wasm')));
 const { project, assets } = makeDemo();
 
-// Supply the embedded WCLAP bundle bytes for each bank plugin (synth/limiter).
+// Supply the embedded WCLAP bundle bytes for each bank plugin.
 const BUNDLE_FILES = {
   'dev.zaudio.simple-synth': 'z-audio-simple-synth.wclap.tar.gz',
   'dev.zaudio.limiter': 'z-audio-limiter.wclap.tar.gz',
+  'dev.zaudio.vcsl-piano': 'z-audio-vcsl-piano.wclap.tar.gz',
 };
 const plugins = [];
 for (const p of project.plugins ?? []) {
@@ -58,6 +59,16 @@ console.log(`battle section=${core.currentSection}`);
 core.setRtpc('intensity', 0.9);
 render(5);
 console.log(`high   section=${core.currentSection}`);
+core.setRtpc('intensity', 0.2);
+render(3); // let the nextBar transition back to Battle_Low land
+core.pollEvents(); // drain (the queue caps at 256)
+// v3 track transition: swap only the Drums slot of Battle_Low (graph cue).
+core.triggerCue('swap_drums');
+render(3);
+const trackGoto = core.pollEvents().filter((e) => e.type === 10);
+console.log(`swap   section=${core.currentSection} trackGotoEvents=${trackGoto.length}`);
+core.triggerCue('restore_drums');
+render(3);
 core.triggerCue('to_ending');
 render(12);
 console.log(`ending section=${core.currentSection} playing=${core.playing}`);

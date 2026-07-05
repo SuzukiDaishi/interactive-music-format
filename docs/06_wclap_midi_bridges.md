@@ -1,4 +1,4 @@
-# 06. WCLAP プラグイン・MIDI トラック・横遷移ブリッジ (v2)
+# 06. WCLAP プラグイン・MIDI トラック・横遷移ブリッジ (v2) / 生成系ホスティング (v3)
 
 IAM v2 で追加された 3 機能の設計と動作。参照実装:
 データモデル `packages/iam-pack/src/model.ts`、エンコーダ/デコーダ
@@ -85,6 +85,8 @@ worklet 内でも動く最小 CLAP ホスト。`module.wasm` は `clap_entry`（
 | 12 | f32 | velocity (0..1) |
 
 ホストは `iam_process` の直後にキューが空になるまで `iam_poll_midi` を呼ぶ。
+status=2 (AllNotesOff) は `instance = NONE_ID` なら全楽器へ、そうでなければ
+そのインスタンスのみ（v3: gotoTrack の切替時に使用）。
 
 ## 5. 横遷移（bridge / トランジションセグメント）
 
@@ -115,3 +117,45 @@ worklet 内でも動く最小 CLAP ホスト。`module.wasm` は `clap_entry`（
 - `tests/wclap-host.test.mjs`: 実バンドルのロードとシンセ/エフェクトの描画。
 - `tests/wclap-integration.test.mjs`: エンジン MIDI → rack の可聴ミックス、ルーティング。
 - `tests/wclap-midi.test.mjs`: ラウンドトリップ、検証、サンプル精度 MIDI、bridge 遷移。
+
+## 8. 生成系 WCLAP ホスティング (v3)
+
+ジェネレーティブミュージックは**プラグイン側**が担い、ホストは以下を提供する
+（`wclap/host.ts` / `wclap/rack.ts`、worklet.ts にインライン複製あり）:
+
+### 8.1 CLAP トランスポート
+
+各インスタンスの `clap_process.transport` に 104 バイトの
+`clap_event_transport` を常設し、毎ブロック BPM / 拍位置（`CLAP_BEATTIME_FACTOR
+= 2^31` の固定小数）/ 小節頭 / 拍子 / 再生状態を書き込む。エンジンの
+`iam_get_bpm` / `iam_get_position_beats` / `iam_get_beats_per_bar` /
+`iam_is_playing` が情報源。ジェネレータはこれでグリッドに同期できる。
+
+### 8.2 ノート出力の捕捉 (`out_events`)
+
+`clap_output_events.try_push` ホストコールバックが、プラグインが push した
+イベントを**コールバック中にコピー**する（サイズ 12..64 の境界検査、CLAP コア
+スペースの NOTE_ON/NOTE_OFF のみ解釈、その他は受領して破棄）。捕捉ノートは
+`WclapInstance.takeOutputNotes()` で取り出す。
+
+### 8.3 ルーティング（NSRC / PMOD）
+
+rack のブロック処理順:
+
+```
+transport 書込 → PMOD (RTPC をカーブ変換し変化時のみ PARAM_VALUE 送出)
+→ ジェネレータ process（音声破棄・ノート捕捉→ターゲット楽器へ同ブロック転送）
+→ 楽器 + インサート → マスターエフェクト
+```
+
+- `NSRC` のターゲットがどのトラックからも参照されていない場合も自動的に
+  楽器サムに加わる（生成ノートだけで発音する使い方）。
+- Cue の `setPluginParam`（イベント type 9）は worklet のイベントドレインで
+  rack に適用される（次ブロックから有効）。
+- ジェネレータの例外は rack 全体のフォールバック（エンジン PCM のみ）で吸収。
+
+### 8.4 テスト
+
+`tests/wclap-generative.test.mjs` はテスト内で最小の CLAP プラグイン wasm を
+手組みし（`buildTrampolineModule` と同じ手法）、ノート捕捉と
+「ジェネレータ → 実シンセ」ルーティングの可聴性を検証する。

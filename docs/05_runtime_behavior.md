@@ -40,6 +40,8 @@
 4. 停止中に `goto` が発行された場合は対象 Section を即時再生開始する。
 
 `stop(timing)` も同じ pending 機構で「音楽的な位置で止まる」を実現する。
+timing 付き `setTrackGain`（v3, opcode 0x0A）も同様に発火位置を予約し、
+境界ちょうどでゲインスムーザを起動する（複数トラック分を同時に保持できる）。
 
 ### 4.1 横遷移（bridge / トランジションセグメント, v2）
 
@@ -49,6 +51,28 @@
 後続 pending として予約する（§5 の機構を再利用）。`sectionChanged` は A→bridge、
 bridge→目的地の 2 回発火。無効な bridge id は直接遷移へデグレード。
 詳細は [06_wclap_midi_bridges.md](./06_wclap_midi_bridges.md)。
+
+### 4.2 トラック単位の遷移（gotoTrack, v3）
+
+`gotoTrack` は **main プレイヤーの 1 トラックスロット**の内容だけを、別セクションの
+トラックへ差し替える（他のトラックは鳴り続ける）。
+
+- 対象 `section` が再生中の main セクションでない場合は**無視**される。
+- `timing` で実行位置を予約（スロットごとに後勝ち。§2 の境界にもなる）。
+- 実行時、スロットに**オーバーライド**が設定される: 以後そのスロットは
+  ソーストラックの内容を **beat 基準で main タイムラインに同期**して描画する
+  （`src_pos_beats = main_pos_beats mod src_length_beats`。BPM が異なる場合も
+  拍で対応し、ソース長で折り返す）。
+- crossfade 指定時は新旧ソースを `fade_ms` でミックスする。**ミキサ状態
+  （volume / pan / mute / cue ゲイン / ブレンド曲線）は常に宛先スロット側**が
+  適用される。
+- instrument トラックでは MIDI ストリームが境界で切り替わり、旧ストリームの
+  楽器インスタンスへ**対象限定の All-Notes-Off**（status=2, instance 指定）を送る。
+  ノートはソーストラックの楽器インスタンスへルーティングされる。
+- `src_section = NONE_ID` でオーバーライド解除（crossfade 可）。
+- **セクション遷移（goto / play / ループではない切替）でオーバーライドと
+  予約はすべて破棄**される — 新しいセクションは常に素の状態で始まる。
+- `trackGoto` イベント（type 10）で通知される。
 
 ## 5. Section 終端の処理順序（順方向）
 
@@ -85,8 +109,9 @@ bridge→目的地の 2 回発火。無効な bridge id は直接遷移へデグ
 ## 8. ミキシング
 
 ```txt
-sample = Σ players Σ tracks Σ items
-         item.gain × itemFade × track.volume × trackGainOverride(平滑) × playerFade
+sample = Σ players Σ tracks Σ items(実効ソース)
+         item.gain × itemFade × track.volume × trackGainOverride(平滑)
+         × blendGain(RTPC曲線, v3) × crossfadeWeight(gotoTrack, v3) × playerFade
          → pan → Σ → 出力チャンネル
 ```
 
@@ -94,6 +119,14 @@ sample = Σ players Σ tracks Σ items
 - 出力 1ch 指定時は L/R 平均でダウンミックス。
 - Item のフェードイン/アウトは拍単位の線形フェード。
 - クリッピングは行わない（ホスト側でリミッタを掛けること）。
+
+### 8.0 縦ブレンド（BLND, v3）
+
+- 各 (Section, Track) に割り当てられたブレンド曲線は、**平滑化済み RTPC 値**を
+  区分線形補間した係数として毎ブロック評価される（範囲外はクランプ、複数曲線は乗算）。
+- `smoothing_ms` を持つ RTPC ではフェードもオーディオレートで滑らかになる。
+- instrument トラックには `iam_instrument_gain` を通じて同じ係数が適用される
+  （v3 から cue ゲイン・ブレンドも反映される）。
 
 ### 8.1 MIDI（instrument トラック, v2）
 
@@ -118,6 +151,7 @@ sample = Σ players Σ tracks Σ items
 |---|---|
 | 同時 Section プレイヤー | 8（超過時は最古を破棄） |
 | 同時 oneShot | 16（超過時は最古を破棄） |
+| 予約 setTrackGainTimed / gotoTrack (v3) | 各 64 |
 | イベントキュー | 256（溢れは新規破棄） |
 | Cue 再帰深度 | 8 |
 | VM スタック | 64 / 条件バイトコード 64KiB |

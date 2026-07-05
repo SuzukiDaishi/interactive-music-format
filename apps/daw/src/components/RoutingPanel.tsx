@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -13,6 +13,7 @@ import {
   type NodeTypes,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { useDerivedFlow } from './flowState';
 import { useStore, store } from '../store';
 import { preview } from '../preview';
 import { CurveEditor } from './CurveEditor';
@@ -56,7 +57,7 @@ export function RoutingPanel() {
   const project = s.project;
 
   // ---- derive nodes -------------------------------------------------------
-  const rfNodes = useMemo<RFNode[]>(() => {
+  const deriveNodes = (): RFNode[] => {
     autoSlot = {};
     const row = (col: string) => (autoSlot[col] = (autoSlot[col] ?? 0) + 1) - 1;
     const nodes: RFNode[] = [];
@@ -89,10 +90,9 @@ export function RoutingPanel() {
     }
     nodes.push({ id: 'master', type: 'master', position: place('master', 4, 0), data: {} });
     return nodes;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.version]);
+  };
 
-  const rfEdges = useMemo<RFEdge[]>(() => {
+  const deriveEdges = (): RFEdge[] => {
     const edges: RFEdge[] = [];
     const push = (
       id: string,
@@ -128,21 +128,20 @@ export function RoutingPanel() {
       }
     }
     return edges;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.version]);
+  };
+
+  const flow = useDerivedFlow(() => ({ nodes: deriveNodes(), edges: deriveEdges() }), [s.version]);
 
   // ---- graph interactions -------------------------------------------------
   const onNodesChange = (changes: NodeChange[]) => {
-    let structural = false;
+    flow.applyNodes(changes);
     for (const c of changes) {
       if (c.type === 'position' && c.position) {
         positions.set(c.id, c.position);
       } else if (c.type === 'remove') {
-        structural = true;
         deleteNode(c.id);
       }
     }
-    if (!structural) store.touch(() => {});
   };
 
   const deleteNode = (id: string) => {
@@ -167,6 +166,7 @@ export function RoutingPanel() {
   };
 
   const onEdgesChange = (changes: EdgeChange[]) => {
+    flow.applyEdges(changes);
     const removed = changes.filter((c) => c.type === 'remove');
     if (!removed.length) return;
     store.update((st) => {
@@ -390,8 +390,8 @@ export function RoutingPanel() {
       </div>
       <div className="graph-canvas">
         <ReactFlow
-          nodes={rfNodes}
-          edges={rfEdges}
+          nodes={flow.nodes}
+          edges={flow.edges}
           nodeTypes={ROUTING_NODE_TYPES}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}

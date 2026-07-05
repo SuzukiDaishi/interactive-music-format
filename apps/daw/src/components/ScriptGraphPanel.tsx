@@ -5,14 +5,13 @@ import {
   Controls,
   Handle,
   Position,
-  type Node as RFNode,
-  type Edge as RFEdge,
   type NodeChange,
   type EdgeChange,
   type Connection,
   type NodeTypes,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { useDerivedFlow } from './flowState';
 import { useStore, store } from '../store';
 import { checkGraphs, compileGraphs, type GraphNode, type GraphNodeKind } from '@iam/pack';
 
@@ -167,20 +166,15 @@ export function ScriptGraphPanel() {
     });
   };
 
-  const rfNodes = useMemo<RFNode[]>(
-    () =>
-      (graph?.nodes ?? []).map((n) => ({
+  const flow = useDerivedFlow(
+    () => ({
+      nodes: (graph?.nodes ?? []).map((n) => ({
         id: n.id,
         type: 'iam',
         position: { x: n.x, y: n.y },
         data: { graphId: graph!.id },
       })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [s.version, graph?.id],
-  );
-  const rfEdges = useMemo<RFEdge[]>(
-    () =>
-      (graph?.edges ?? []).map((e) => ({
+      edges: (graph?.edges ?? []).map((e) => ({
         id: `${e.from}.${e.fromPort}->${e.to}.${e.toPort}`,
         source: e.from,
         sourceHandle: e.fromPort,
@@ -188,33 +182,32 @@ export function ScriptGraphPanel() {
         targetHandle: e.toPort,
         className: EXEC_SOURCES.has(e.fromPort) ? 'edge-exec' : 'edge-value',
       })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }),
     [s.version, graph?.id],
   );
 
   const onNodesChange = (changes: NodeChange[]) => {
+    flow.applyNodes(changes);
     if (!graph) return;
-    let structural = false;
-    store.touch(() => {
-      for (const c of changes) {
-        if (c.type === 'position' && c.position) {
-          const n = graph.nodes.find((x) => x.id === c.id);
-          if (n) {
-            n.x = c.position.x;
-            n.y = c.position.y;
-            if (!c.dragging) structural = true; // final position: mark dirty
-          }
-        } else if (c.type === 'remove') {
+    for (const c of changes) {
+      if (c.type === 'position' && c.position) {
+        const n = graph.nodes.find((x) => x.id === c.id);
+        if (n) {
+          n.x = c.position.x;
+          n.y = c.position.y;
+          if (!c.dragging) store.update(() => {}); // persist final position
+        }
+      } else if (c.type === 'remove') {
+        store.update(() => {
           graph.nodes = graph.nodes.filter((x) => x.id !== c.id);
           graph.edges = graph.edges.filter((e) => e.from !== c.id && e.to !== c.id);
-          structural = true;
-        }
+        });
       }
-    });
-    if (structural) store.update(() => {});
+    }
   };
 
   const onEdgesChange = (changes: EdgeChange[]) => {
+    flow.applyEdges(changes);
     if (!graph) return;
     const removed = changes.filter((c) => c.type === 'remove');
     if (removed.length === 0) return;
@@ -350,8 +343,8 @@ export function ScriptGraphPanel() {
       {graph ? (
         <div className="graph-canvas">
           <ReactFlow
-            nodes={rfNodes}
-            edges={rfEdges}
+            nodes={flow.nodes}
+            edges={flow.edges}
             nodeTypes={NODE_TYPES}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}

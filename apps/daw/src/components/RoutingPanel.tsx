@@ -3,6 +3,8 @@ import {
   ReactFlow,
   Background,
   Controls,
+  MiniMap,
+  Panel,
   Handle,
   Position,
   type Node as RFNode,
@@ -33,14 +35,20 @@ import type { Rtpc } from '@iam/pack';
 
 // Session-persistent node positions (auto-layout provides defaults).
 const positions = new Map<string, { x: number; y: number }>();
-let autoSlot: Record<string, number> = {};
 
-function place(id: string, col: number, row: number): { x: number; y: number } {
-  const cached = positions.get(id);
-  if (cached) return cached;
-  const p = { x: 24 + col * 300, y: 24 + row * 170 };
-  positions.set(id, p);
-  return p;
+const COL_X = [24, 330, 660, 990, 1330];
+/** Column swimlanes shown as fixed header nodes on the canvas. */
+const COLUMNS: [title: string, sub: string][] = [
+  ['Parameters', 'ゲームが動かす値 (RTPC)'],
+  ['Curves & Mods', '値→音量/パラメータ変換'],
+  ['Plugins', 'WebCLAP 音源・エフェクト'],
+  ['Tracks', 'セクションのトラック'],
+  ['Master', '最終ミックス'],
+];
+
+/** Deterministic accent color per section (chips on track nodes). */
+export function sectionColor(id: number): string {
+  return `hsl(${(id * 73 + 210) % 360} 42% 46%)`;
 }
 
 /** Live RTPC values pushed to the running preview (UI state only). */
@@ -58,37 +66,62 @@ export function RoutingPanel() {
 
   // ---- derive nodes -------------------------------------------------------
   const deriveNodes = (): RFNode[] => {
-    autoSlot = {};
-    const row = (col: string) => (autoSlot[col] = (autoSlot[col] ?? 0) + 1) - 1;
     const nodes: RFNode[] = [];
+    const cursors = [64, 64, 64, 64, 64];
+    // Auto-layout: stack nodes per column; drags override via the cache.
+    const put = (id: string, col: number, height: number) => {
+      let p = positions.get(id);
+      if (!p) {
+        p = { x: COL_X[col], y: cursors[col] };
+        positions.set(id, p);
+      }
+      cursors[col] += height;
+      return p;
+    };
+    COLUMNS.forEach(([title, sub], col) => {
+      nodes.push({
+        id: `label:${col}`,
+        type: 'label',
+        position: { x: COL_X[col], y: 8 },
+        data: { title, sub },
+        draggable: false,
+        selectable: false,
+      });
+    });
     for (const r of project.rtpcs) {
       const id = `rtpc:${r.id}`;
-      nodes.push({ id, type: 'rtpc', position: place(id, 0, row('0')), data: { rtpcId: r.id } });
+      nodes.push({ id, type: 'rtpc', position: put(id, 0, 96), data: { rtpcId: r.id } });
     }
     for (const b of project.blends ?? []) {
       const id = `blend:${b.id}`;
-      nodes.push({ id, type: 'blend', position: place(id, 1, row('1')), data: { blendId: b.id } });
+      nodes.push({ id, type: 'blend', position: put(id, 1, 190), data: { blendId: b.id } });
     }
     (project.paramMods ?? []).forEach((m, i) => {
       const id = `mod:${i}`;
-      nodes.push({ id, type: 'mod', position: place(id, 1, row('1')), data: { modIndex: i } });
+      nodes.push({ id, type: 'mod', position: put(id, 1, 210), data: { modIndex: i } });
     });
     for (const inst of project.pluginInstances) {
       const id = `inst:${inst.id}`;
-      nodes.push({ id, type: 'inst', position: place(id, 2, row('2')), data: { instanceId: inst.id } });
+      nodes.push({
+        id,
+        type: 'inst',
+        position: put(id, 2, 140 + inst.params.length * 24),
+        data: { instanceId: inst.id },
+      });
     }
     for (const sec of project.sections) {
+      cursors[3] += 14; // gap between section groups
       for (const t of sec.tracks) {
         const id = `track:${sec.id}:${t.id}`;
         nodes.push({
           id,
           type: 'track',
-          position: place(id, 3, row('3')),
+          position: put(id, 3, 88),
           data: { sectionId: sec.id, trackId: t.id },
         });
       }
     }
-    nodes.push({ id: 'master', type: 'master', position: place('master', 4, 0), data: {} });
+    nodes.push({ id: 'master', type: 'master', position: put('master', 4, 160), data: {} });
     return nodes;
   };
 
@@ -146,6 +179,7 @@ export function RoutingPanel() {
 
   const deleteNode = (id: string) => {
     const [kind, a, b] = id.split(':');
+    if (kind === 'label' || kind === 'master') return;
     store.update((st) => {
       if (kind === 'rtpc') {
         const rid = Number(a);
@@ -339,12 +373,15 @@ export function RoutingPanel() {
     }
   };
 
+  const [showHelp, setShowHelp] = useState(false);
+
   return (
     <div className="graph-panel">
       <div className="graph-toolbar">
-        <button onClick={addRtpc} title="Add a realtime parameter the host game drives">＋ Parameter</button>
-        <button onClick={addBlend} title="Add an RTPC→track-gain blend curve (vertical transition)">＋ Blend</button>
-        <button onClick={addMod} title="Add an RTPC→plugin-parameter modulation">＋ Param mod</button>
+        <span className="toolbar-label">追加:</span>
+        <button onClick={addRtpc} title="ゲームから動かすパラメータ (RTPC) を追加">＋ Parameter</button>
+        <button onClick={addBlend} title="RTPC→トラック音量のブレンドカーブ（縦の遷移）を追加">＋ Blend</button>
+        <button onClick={addMod} title="RTPC→プラグインパラメータの変調を追加">＋ Param mod</button>
         <select
           value=""
           disabled={busy}
@@ -384,9 +421,10 @@ export function RoutingPanel() {
             e.target.value = '';
           }}
         />
-        <span className="hint-inline">
-          drag cables: parameter → curve → track · generator ♪ → synth → track
-        </span>
+        <div className="spacer" />
+        <button className={showHelp ? 'active' : ''} onClick={() => setShowHelp(!showHelp)} title="使い方">
+          ？ 使い方
+        </button>
       </div>
       <div className="graph-canvas">
         <ReactFlow
@@ -398,14 +436,48 @@ export function RoutingPanel() {
           onConnect={onConnect}
           deleteKeyCode={['Backspace', 'Delete']}
           fitView
-          minZoom={0.25}
+          fitViewOptions={{ padding: 0.12, maxZoom: 0.85 }}
+          minZoom={0.2}
           colorMode="dark"
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={16} />
           <Controls showInteractive={false} />
+          <MiniMap pannable zoomable className="canvas-minimap" />
+          <Panel position="bottom-center" className="canvas-legend">
+            <span><i className="dot port-value-c" />値 (RTPC)</span>
+            <span><i className="dot port-mod-c" />変調・ゲイン</span>
+            <span><i className="dot port-notes-c" />ノート (MIDI)</span>
+            <span><i className="dot port-audio-c" />オーディオ</span>
+            <span className="dim">｜ケーブル=ドラッグ配線 / Delete=削除</span>
+          </Panel>
         </ReactFlow>
+        {showHelp && (
+          <div className="help-overlay" onClick={() => setShowHelp(false)}>
+            <h3>Routing ビュー — 音の配線図</h3>
+            <p>ゲームの状態が音になるまでを、左から右へケーブルで配線します。</p>
+            <ul>
+              <li><b>Parameters</b>: ゲームが動かす値（intensity 等）。ノード上のスライダで<b>その場で試聴操作</b>できます。</li>
+              <li><b>Blend curve</b>: 値→トラック音量のカーブ（縦の遷移）。カーブは<b>ドラッグで編集</b>、ダブルクリックで点を追加。</li>
+              <li><b>Param mod</b>: 値→プラグインの CLAP パラメータ（例: intensity でビブラート深さ）。</li>
+              <li><b>Plugins</b>: WebCLAP 音源/エフェクト。<b>♪ 出力を別の音源の ♪ 入力に繋ぐとノートジェネレータ</b>になります（生成音楽）。</li>
+              <li><b>Tracks</b>: 音源の右下ポート→トラックの synth 入力で、どのトラックがどの音源を鳴らすかを配線。</li>
+              <li><b>Master</b>: 全トラックの合流点。エフェクトノードの「master chain」でチェーンに追加。</li>
+            </ul>
+            <p className="dim">クリックで閉じる</p>
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+/** Column header shown at the top of each swimlane. */
+function LabelNode({ data }: { data: { title: string; sub: string } }) {
+  return (
+    <div className="col-label">
+      <div className="col-label-title">{data.title}</div>
+      {data.sub && <div className="col-label-sub">{data.sub}</div>}
     </div>
   );
 }
@@ -535,7 +607,7 @@ function RtpcNode({ data }: { data: { rtpcId: number } }) {
           </label>
         </>
       )}
-      <Handle type="source" position={Position.Right} id="value" className="port-value" />
+      <Handle type="source" position={Position.Right} id="value" className="port-value" title="値の出力 → Blend / Param mod へ" />
     </div>
   );
 }
@@ -559,8 +631,8 @@ function BlendNode({ data }: { data: { blendId: number } }) {
         xMax={rtpc?.max ?? 1}
         onChange={(pts) => store.update(() => (b.points = pts))}
       />
-      <Handle type="target" position={Position.Left} id="rtpc" className="port-value" />
-      <Handle type="source" position={Position.Right} id="out" className="port-mod" />
+      <Handle type="target" position={Position.Left} id="rtpc" className="port-value" title="駆動するパラメータ (RTPC)" />
+      <Handle type="source" position={Position.Right} id="out" className="port-mod" title="トラックの gain 入力へ" />
     </div>
   );
 }
@@ -589,8 +661,8 @@ function ModNode({ data }: { data: { modIndex: number } }) {
         yMax={Math.max(1.5, ...m.points.map((p) => p.y * 1.2))}
         onChange={(pts) => store.update(() => (m.points = pts))}
       />
-      <Handle type="target" position={Position.Left} id="rtpc" className="port-value" />
-      <Handle type="source" position={Position.Right} id="param" className="port-mod" />
+      <Handle type="target" position={Position.Left} id="rtpc" className="port-value" title="駆動するパラメータ (RTPC)" />
+      <Handle type="source" position={Position.Right} id="param" className="port-mod" title="プラグインの param 入力へ" />
     </div>
   );
 }
@@ -642,12 +714,12 @@ function InstNode({ data }: { data: { instanceId: number } }) {
         <MasterChainToggle instanceId={inst.id} />
       ) : (
         <>
-          <Handle type="target" position={Position.Left} id="notesIn" className="port-notes" />
-          <Handle type="source" position={Position.Right} id="notes" style={{ top: '35%' }} className="port-notes" />
-          <Handle type="source" position={Position.Right} id="synth" style={{ top: '70%' }} className="port-audio" />
+          <Handle type="target" position={Position.Left} id="notesIn" className="port-notes" title="ノート入力（ジェネレータの ♪ を受ける）" />
+          <Handle type="source" position={Position.Right} id="notes" style={{ top: '35%' }} className="port-notes" title="♪ ノート出力 → 別の音源に繋ぐと生成MIDI" />
+          <Handle type="source" position={Position.Right} id="synth" style={{ top: '70%' }} className="port-audio" title="音源としてトラックの synth 入力へ" />
         </>
       )}
-      <Handle type="target" position={Position.Left} id="param" style={{ top: '70%' }} className="port-mod" />
+      <Handle type="target" position={Position.Left} id="param" style={{ top: '70%' }} className="port-mod" title="パラメータ変調の入力" />
     </div>
   );
 }
@@ -681,7 +753,8 @@ function TrackNode({ data }: { data: { sectionId: number; trackId: number } }) {
   return (
     <div className={`gnode gnode-track${t.muted ? ' muted' : ''}`}>
       <div className="gnode-title">
-        <span className="dim">{sec.name} ·</span> {t.name}
+        <span className="sec-chip" style={{ background: sectionColor(sec.id) }}>{sec.name}</span>
+        {t.name}
         <span className="badge">{t.kind === 'instrument' ? 'synth' : 'audio'}</span>
       </div>
       <div className="gfield live">
@@ -717,9 +790,9 @@ function TrackNode({ data }: { data: { sectionId: number; trackId: number } }) {
           fx: {(t.effects ?? []).map((id) => `#${id}`).join(' → ')}
         </div>
       )}
-      <Handle type="target" position={Position.Left} id="gain" className="port-mod" />
+      <Handle type="target" position={Position.Left} id="gain" className="port-mod" title="Blend カーブからの音量入力" />
       {t.kind === 'instrument' && (
-        <Handle type="target" position={Position.Left} id="synth" style={{ top: '70%' }} className="port-audio" />
+        <Handle type="target" position={Position.Left} id="synth" style={{ top: '70%' }} className="port-audio" title="このトラックを鳴らす音源" />
       )}
     </div>
   );
@@ -765,6 +838,7 @@ function MasterNode() {
 }
 
 const ROUTING_NODE_TYPES: NodeTypes = {
+  label: LabelNode as never,
   rtpc: RtpcNode as never,
   blend: BlendNode as never,
   mod: ModNode as never,

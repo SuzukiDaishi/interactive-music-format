@@ -11,9 +11,9 @@ import { store, useStore } from './store';
 import { loadDemoProject } from './demo';
 
 const VIEWS = [
-  ['arrange', 'Arrange', 'Sections, tracks and clips on a timeline'],
-  ['routing', 'Routing', 'Parameters, blends, plugins and MIDI routing as a node patch'],
-  ['logic', 'Logic', 'Triggers → conditions → actions as node graphs'],
+  ['arrange', '🎹 Arrange', '配置', 'セクション・トラック・クリップをタイムラインで編集'],
+  ['routing', '🔀 Routing', '配線', 'パラメータ・ブレンド・プラグイン・MIDI をノードで配線'],
+  ['logic', '⚡ Logic', 'ロジック', 'トリガ→条件→アクションのスクリプトグラフ'],
 ] as const;
 
 export function App() {
@@ -62,14 +62,14 @@ export function App() {
         </div>
         <div className="col center">
           <div className="center-tabs">
-            {VIEWS.map(([id, label, tip]) => (
+            {VIEWS.map(([id, label, jp, tip]) => (
               <button
                 key={id}
                 className={s.centerView === id ? 'tab active' : 'tab'}
                 title={tip}
                 onClick={() => store.touch((st) => (st.centerView = id))}
               >
-                {label}
+                {label} <span className="tab-jp">{jp}</span>
               </button>
             ))}
           </div>

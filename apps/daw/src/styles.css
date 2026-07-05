@@ -1112,3 +1112,160 @@ input[type='number'] {
   color: #767c88;
   font-size: 11px;
 }
+
+/* --- v3.2: readability & guidance ------------------------------------------ */
+.center-tabs .tab {
+  font-size: 13px;
+  padding: 6px 16px;
+}
+.center-tabs .tab-jp {
+  color: #767c88;
+  font-size: 11px;
+  margin-left: 2px;
+}
+.center-tabs .tab.active .tab-jp {
+  color: #9aa0ab;
+}
+.head-jp {
+  color: #767c88;
+  font-size: 10px;
+  font-weight: 400;
+  margin-left: 6px;
+}
+.toolbar-label {
+  color: #767c88;
+  font-size: 12px;
+}
+.graph-toolbar button.active {
+  background: #3a4a63;
+  color: #e6e8ec;
+}
+
+/* Bigger, clearer nodes */
+.gnode {
+  min-width: 170px;
+  max-width: 250px;
+  font-size: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.gnode-title {
+  font-size: 12.5px;
+  padding: 5px 9px;
+}
+.gnode .gfield {
+  padding: 3px 9px;
+}
+.gnode .gfield select,
+.gnode .gfield input[type='number'],
+.gnode .gfield input:not([type]) {
+  font-size: 12px;
+  padding: 2px 5px;
+}
+.gnode .sec-chip {
+  display: inline-block;
+  padding: 0 6px;
+  margin-right: 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+}
+.react-flow .port-exec { width: 12px; height: 12px; }
+.react-flow .port-value, .react-flow .port-mod,
+.react-flow .port-notes, .react-flow .port-audio { width: 11px; height: 11px; }
+.react-flow .edge-value path { stroke-width: 2; }
+.react-flow .edge-mod path, .react-flow .edge-notes path,
+.react-flow .edge-audio path { stroke-width: 2; }
+
+/* Column swimlane labels */
+.col-label {
+  pointer-events: none;
+  width: 250px;
+  border-bottom: 2px solid #3c404a;
+  padding-bottom: 4px;
+}
+.col-label-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #cfd4dd;
+  letter-spacing: 0.03em;
+}
+.col-label-sub {
+  font-size: 11px;
+  color: #767c88;
+}
+
+/* Canvas legend + minimap + help */
+.canvas-legend {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  background: rgba(24, 26, 30, 0.9);
+  border: 1px solid #3c404a;
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: #b9bfca;
+}
+.canvas-legend .dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+.canvas-legend .exec-c { background: #e0a24a; }
+.canvas-legend .port-value-c { background: #6aa2ff; }
+.canvas-legend .port-mod-c { background: #57c1a2; }
+.canvas-legend .port-notes-c { background: #c68be0; border-radius: 2px; }
+.canvas-legend .port-audio-c { background: #7ba7e8; }
+.canvas-minimap {
+  background: #1c1e23 !important;
+  border: 1px solid #3c404a;
+  border-radius: 8px;
+  width: 160px !important;
+  height: 110px !important;
+}
+.help-overlay {
+  position: absolute;
+  inset: 24px 24px auto;
+  max-width: 620px;
+  margin: 0 auto;
+  background: rgba(22, 24, 28, 0.97);
+  border: 1px solid #4a5060;
+  border-radius: 12px;
+  padding: 18px 22px;
+  z-index: 20;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #d6dae2;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+.help-overlay h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  color: #fff;
+}
+.help-overlay ul {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+.help-overlay li {
+  margin-bottom: 4px;
+}
+.help-overlay code {
+  background: #2c2f36;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.live-cues-label {
+  width: 100%;
+  color: #767c88;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+.canvas-legend span {
+  white-space: nowrap;
+}

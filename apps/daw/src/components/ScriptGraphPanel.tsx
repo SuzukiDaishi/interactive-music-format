@@ -3,6 +3,8 @@ import {
   ReactFlow,
   Background,
   Controls,
+  MiniMap,
+  Panel,
   Handle,
   Position,
   type NodeChange,
@@ -156,6 +158,7 @@ export function ScriptGraphPanel() {
   const [graphId, setGraphId] = useState<number | null>(graphs[0]?.id ?? null);
   const graph = graphs.find((g) => g.id === graphId) ?? graphs[0] ?? null;
   const [showCompiled, setShowCompiled] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   const addGraph = () => {
     store.update((st) => {
@@ -321,9 +324,12 @@ export function ScriptGraphPanel() {
             </select>
             <button
               onClick={() => setShowCompiled(!showCompiled)}
-              title="Preview the cues/bindings this graph compiles to"
+              title="このグラフがコンパイルされる Cue/条件を確認"
             >
               {showCompiled ? 'Hide compiled' : 'Show compiled'}
+            </button>
+            <button className={showHelp ? 'active' : ''} onClick={() => setShowHelp(!showHelp)} title="使い方">
+              ？ 使い方
             </button>
             <div className="spacer" />
             <button
@@ -351,12 +357,34 @@ export function ScriptGraphPanel() {
             onConnect={onConnect}
             deleteKeyCode={['Backspace', 'Delete']}
             fitView
+            fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+            minZoom={0.2}
             colorMode="dark"
             proOptions={{ hideAttribution: true }}
           >
             <Background gap={16} />
             <Controls showInteractive={false} />
+            <MiniMap pannable zoomable className="canvas-minimap" />
+            <Panel position="bottom-center" className="canvas-legend">
+              <span><i className="dot exec-c" />実行の流れ (trigger→action)</span>
+              <span><i className="dot port-value-c" />値・条件</span>
+              <span className="dim">｜ケーブル=ドラッグ配線 / Delete=削除</span>
+            </Panel>
           </ReactFlow>
+          {showHelp && (
+            <div className="help-overlay" onClick={() => setShowHelp(false)}>
+              <h3>Logic ビュー — 音楽ロジックのスクリプト</h3>
+              <p>「いつ（Trigger）→ どういう条件で（Logic）→ 何をするか（Action）」を左から右へ配線します。</p>
+              <ul>
+                <li><b>Trigger</b>（紫）: RTPC 変更・小節頭・セクション終端・手動 Cue などの起点。オレンジの実行ポートから配線します。</li>
+                <li><b>Branch</b>: 条件 (青い値入力) が真なら then、偽なら else へ分岐。</li>
+                <li><b>Value / Logic</b>（緑/青）: RTPC 値・定数・比較・数式。<b>Expression</b> ノードには式を直接書けます（例: <code>intensity &gt;= 0.5</code>）。</li>
+                <li><b>Action</b>（茶）: セクション遷移 (goto)、<b>トラック単位遷移 (Goto Track)</b>、音量、RTPC 設定など。実行ポートを数珠つなぎにすると順番に実行されます。</li>
+                <li>エクスポート時に安全な Cue VM バイトコードへ自動コンパイルされます（Show compiled で確認）。</li>
+              </ul>
+              <p className="dim">クリックで閉じる</p>
+            </div>
+          )}
           {compiled && (
             <div className="graph-compiled">
               {compiled.issues.length > 0 ? (

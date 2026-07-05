@@ -25,7 +25,9 @@ export function LivePanel() {
   return (
     <div className="panel live-panel">
       <div className="panel-head">
-        <span title="Simulate the host game while previewing">Live Control</span>
+        <span title="試聴中にゲーム側の操作を模擬（パラメータ・Cue 発火）">
+          Live Control <span className="head-jp">ゲーム操作を模擬</span>
+        </span>
         <Meter />
       </div>
       <div className="panel-body">
@@ -67,12 +69,13 @@ export function LivePanel() {
           );
         })}
         {s.project.rtpcs.length === 0 && (
-          <div className="hint">Add parameters in the Routing view (＋ Parameter).</div>
+          <div className="hint">Routing ビューの「＋ Parameter」でパラメータを追加すると、ここで動かせます。</div>
         )}
         {manualCues.size > 0 && (
           <div className="live-cues">
+            <div className="live-cues-label">手動 Cue（クリックで発火）</div>
             {[...manualCues].map((name) => (
-              <button key={name} onClick={() => preview.triggerCue(name)} title="Fire this cue in the running preview">
+              <button key={name} onClick={() => preview.triggerCue(name)} title="再生中のプレビューでこの Cue を発火">
                 ⚡ {name}
               </button>
             ))}
